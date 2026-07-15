@@ -1,0 +1,33 @@
+[project]
+name = "crossroads"
+version = "0.1.0"
+description = "Crossroads threat-intelligence platform"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "neo4j==6.2.0",
+    "boto3==1.40.40",
+    "aws-cdk-lib==2.260.0",
+    "constructs>=10.0.0,<11.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.4.2",
+    "moto[dynamodb,ssm]==5.2.2",
+    "ruff==0.15.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["src*", "infra*"]
