@@ -20,7 +20,7 @@ def get_config(name: str, default: str | None = None) -> str:
             return default
         raise KeyError(f"{env_var} not set and no default provided (local env)")
 
-    ssm = boto3.client("ssm", region_name="us-east-1")
+    ssm = boto3.client("ssm")
     param_name = f"/crossroads/{env}/{name}"
     try:
         response = ssm.get_parameter(Name=param_name, WithDecryption=True)

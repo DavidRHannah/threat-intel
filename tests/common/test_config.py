@@ -9,6 +9,7 @@ from src.common import config
 @pytest.fixture(autouse=True)
 def _clear_cache_and_env(monkeypatch):
     config.get_config.cache_clear()
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     monkeypatch.delenv("CROSSROADS_ENV", raising=False)
     monkeypatch.delenv("CROSSROADS_NEO4J_URI", raising=False)
     yield
