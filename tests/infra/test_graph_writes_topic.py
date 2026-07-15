@@ -28,7 +28,7 @@ def test_subscribe_lambda_adds_subscription():
         handler="handler.main",
         code=_lambda.Code.from_inline("def main(event, context): pass"),
     )
-    topic_construct.subscribe_lambda("ScoringSub", fn)
+    topic_construct.subscribe_lambda(fn)
 
     template = Template.from_stack(stack)
     template.resource_count_is("AWS::SNS::Subscription", 1)

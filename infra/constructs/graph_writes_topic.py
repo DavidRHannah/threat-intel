@@ -11,5 +11,11 @@ class GraphWritesTopic(Construct):
         super().__init__(scope, construct_id)
         self.topic = sns.Topic(self, "Topic", topic_name=topic_name)
 
-    def subscribe_lambda(self, id: str, fn: _lambda.IFunction) -> None:
+    def subscribe_lambda(self, fn: _lambda.IFunction) -> None:
+        """Subscribe `fn` to the graph-writes topic.
+
+        No `id` param: `LambdaSubscription` derives the subscription's construct id from `fn`
+        itself, so there is nothing for a caller-supplied id to name. An earlier signature took
+        one and ignored it.
+        """
         self.topic.add_subscription(subs.LambdaSubscription(fn))
