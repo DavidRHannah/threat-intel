@@ -1,5 +1,6 @@
 import hashlib
 import json
+from pathlib import Path
 
 from aws_cdk import BundlingOptions, CustomResource, Duration
 from aws_cdk import aws_lambda as _lambda
@@ -60,6 +61,14 @@ def schema_version() -> str:
 # needed at runtime. Copying the whole repo (`cp -au .`) previously pulled in `.venv` (~576M),
 # blowing past Lambda's 250MB unzipped limit and risking a locally gitignored `.env` (secrets)
 # being staged into the deployment artifact — see NFR-SEC-01 (SSM SecureString only).
+#
+# !! `exclude` does not filter the bundling input — only the hash. !!
+# The `cp -au src` above is the ONLY thing keeping `.venv`/`.env` out of the artifact. CDK
+# passes the whole asset directory into the bundling container regardless of `exclude`; the
+# exclude list below feeds `FileSystem.fingerprint` (which paths changing should invalidate the
+# asset hash) and nothing else. So reverting `cp -au src` back to `cp -au .` on the assumption
+# that `exclude` protects the artifact would silently ship `.venv` and any local `.env`. It
+# does not protect it. Change the `cp` line, not the exclude list, if the copied set must grow.
 _BUNDLING = BundlingOptions(
     image=_lambda.Runtime.PYTHON_3_12.bundling_image,
     command=[
@@ -68,6 +77,12 @@ _BUNDLING = BundlingOptions(
         "pip install neo4j==6.2.0 -t /asset-output && cp -au src /asset-output",
     ],
 )
+
+# Resolve the asset root from this module, never from the process CWD. `Code.from_asset(".")`
+# resolves against wherever `cdk synth` / pytest happened to be invoked from, so synthesizing
+# from any directory but the repo root silently produces a wrong asset.
+# infra/constructs/schema_bootstrap_job.py -> parents[2] == repo root.
+_REPO_ROOT = str(Path(__file__).resolve().parents[2])
 
 
 class SchemaBootstrapJob(Construct):
@@ -80,13 +95,19 @@ class SchemaBootstrapJob(Construct):
             runtime=_lambda.Runtime.PYTHON_3_12,
             handler="src.common.schema_bootstrap_handler.handler",
             code=_lambda.Code.from_asset(
-                ".",
+                _REPO_ROOT,
                 bundling=_BUNDLING,
+                # Purely a fingerprinting concern (see the note above _BUNDLING): these are the
+                # paths whose churn must NOT invalidate the asset hash. `.claude` matters once
+                # this branch merges — the repo root then holds `.claude/worktrees/*/.venv`
+                # (~576M), and fingerprinting would walk that whole tree on every synth.
                 exclude=[
                     ".venv",
                     ".git",
+                    ".claude",
                     ".pytest_cache",
                     ".superpowers",
+                    "**/__pycache__",
                     "crossroads.egg-info",
                     "tests",
                     "plans",
