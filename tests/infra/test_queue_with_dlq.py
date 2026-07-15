@@ -1,6 +1,6 @@
 # tests/infra/test_queue_with_dlq.py
 import aws_cdk as cdk
-from aws_cdk import Duration, Stack, aws_lambda as _lambda
+from aws_cdk import Stack, aws_lambda as _lambda
 from aws_cdk.assertions import Match, Template
 
 from infra.constructs.queue_with_dlq import QueueWithDlq
