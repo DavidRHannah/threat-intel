@@ -1,5 +1,6 @@
-from aws_cdk import RemovalPolicy, Stack
+from aws_cdk import CfnOutput, RemovalPolicy, Stack
 from aws_cdk import aws_dynamodb as dynamodb
+from aws_cdk import aws_ssm as ssm
 from constructs import Construct
 
 from infra.constructs.graph_writes_topic import GraphWritesTopic
@@ -45,6 +46,39 @@ class FoundationStack(Stack):
             self.tables[name] = dynamodb.Table(self, name, **table_kwargs)
 
         self.graph_writes_topic = GraphWritesTopic(self, "GraphWritesTopic")
+
+        # L3's runtime code resolves the topic ARN with `get_config("graph_writes_topic_arn")`,
+        # which reads SSM `/crossroads/{env}/graph_writes_topic_arn` (src/common/config.py).
+        # Nothing published that parameter, so the call raised KeyError in any deployed env.
+        # This stack owns the topic, so this stack owns publishing its ARN. Keep this name and
+        # `get_config`'s path convention in lockstep — the test asserts the exact path.
+        #
+        # A plaintext StringParameter, deliberately: an ARN is not a secret. NFR-SEC-01 scopes
+        # SecureString to secrets, and a SecureString here would only add a KMS decrypt grant to
+        # every subscriber for no confidentiality gain.
+        self.graph_writes_topic_arn_param = ssm.StringParameter(
+            self,
+            "GraphWritesTopicArnParam",
+            parameter_name=f"/crossroads/{env_name}/graph_writes_topic_arn",
+            string_value=self.graph_writes_topic.topic.topic_arn,
+        )
+
+        # Cross-stack consumption path for L1-L7, per plans/00-infra.md Task 11's Interfaces.
+        # Layer stacks in the same account/region should prefer CDK object refs where they can;
+        # these exports exist for stacks (and operators) that resolve by name instead.
+        CfnOutput(
+            self,
+            "GraphWritesTopicArn",
+            value=self.graph_writes_topic.topic.topic_arn,
+            export_name=f"{construct_id}:GraphWritesTopicArn",
+        )
+        for name, table in self.tables.items():
+            CfnOutput(
+                self,
+                f"{name}TableName",
+                value=table.table_name,
+                export_name=f"{construct_id}:{name}TableName",
+            )
 
         self.schema_bootstrap = SchemaBootstrapJob(self, "SchemaBootstrap", env_name=env_name)
         grant_ssm_read(
