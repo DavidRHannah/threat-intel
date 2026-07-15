@@ -1,0 +1,6 @@
+{
+  "app": "python3.12 infra/app.py",
+  "context": {
+    "env": "dev"
+  }
+}
