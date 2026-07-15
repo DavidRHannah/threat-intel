@@ -1,7 +1,52 @@
+import hashlib
+import json
+
 from aws_cdk import BundlingOptions, CustomResource, Duration
 from aws_cdk import aws_lambda as _lambda
 from aws_cdk import custom_resources as cr
 from constructs import Construct
+
+import src.common.schema_bootstrap as schema_bootstrap
+
+
+def schema_version() -> str:
+    """A content hash of every schema input `bootstrap_schema()` applies.
+
+    This is the CustomResource's re-run trigger. CloudFormation only sends an `Update` event
+    when a resource's *template properties* change; a Lambda code update is not a replacement
+    and does not change `ServiceToken`. With `ServiceToken` as the only property, the handler
+    would therefore run on **Create only** — adding a constraint to `UNIQUE_CONSTRAINTS` would
+    rebuild the asset, update the function, report a successful deploy, and never invoke the
+    handler. The constraint would silently not exist, surfacing later as a data-integrity bug
+    rather than a deploy failure. Hashing the schema makes the property move whenever the
+    schema does, which is what makes the "self-applies on every deploy" architecture in
+    `plans/00-infra.md` actually true.
+
+    Every input must be covered or a change to an uncovered one silently won't re-run — hence
+    the vector-index config, not just the constraint list. Module attributes are read at call
+    time (not import time) so the hash always reflects the live values.
+
+    Known gap, deliberate: the vector dimension is resolved at *runtime* by
+    `get_config("embedding_dimensions", default=DEFAULT_VECTOR_DIMENSIONS)`, so this hash can
+    only cover the default. Editing the `embedding_dimensions` SSM parameter without a code
+    change will not re-trigger the bootstrap; the index would need to be dropped and re-created
+    deliberately anyway (Neo4j will not resize one in place), so that is a manual operation
+    either way, not something a deploy should silently do.
+    """
+    payload = json.dumps(
+        {
+            "unique_constraints": [list(c) for c in schema_bootstrap.UNIQUE_CONSTRAINTS],
+            "vector_index": {
+                "name": "article_embedding_index",
+                "label": "Article",
+                "property": "embedding",
+                "dimensions": schema_bootstrap.DEFAULT_VECTOR_DIMENSIONS,
+                "similarity": schema_bootstrap.VECTOR_SIMILARITY,
+            },
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 # The handler imports `neo4j`, which is not part of the Lambda runtime — it must be vendored
 # into the deployment asset. `Code.from_asset(".")` alone only zips source, not dependencies;
@@ -54,4 +99,9 @@ class SchemaBootstrapJob(Construct):
             environment={"CROSSROADS_ENV": env_name},
         )
         provider = cr.Provider(self, "Provider", on_event_handler=self.function)
-        CustomResource(self, "Resource", service_token=provider.service_token)
+        CustomResource(
+            self,
+            "Resource",
+            service_token=provider.service_token,
+            properties={"SchemaVersion": schema_version()},
+        )
