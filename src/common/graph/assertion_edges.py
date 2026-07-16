@@ -4,6 +4,14 @@ from src.common.config import get_config
 from src.common.graph.writer import _check_identifier, _match_clause, merge_relationship
 
 
+def validate_edge_direction(rel_type: str, *, end_label: str) -> None:
+    if rel_type == "ASSOCIATED_WITH" and end_label != "IOC":
+        raise ValueError(
+            f"ASSOCIATED_WITH must end at IOC, got end_label={end_label!r} "
+            "(FR-RG-10: use INDICATES for IOC-to-CVE)"
+        )
+
+
 def _existing(tx, start_label, start_key, end_label, end_key, rel_type):
     """Read the current edge state under the endpoint lock.
 
@@ -41,6 +49,7 @@ def upsert_authoritative_assertion(
     tx, *, start_label, start_key, end_label, end_key, rel_type,
     feed_source: str, credibility_score: float, now: datetime,
 ) -> str:
+    validate_edge_direction(rel_type, end_label=end_label)
     existing = _existing(tx, start_label, start_key, end_label, end_key, rel_type)
     origin = set(existing.get("origin", [])) if existing else set()
     origin.add("authoritative")
@@ -77,6 +86,7 @@ def upsert_inferred_assertion(
     story_cluster_id: str, contribution: float, source_article_ids: list[str],
     now: datetime,
 ) -> str:
+    validate_edge_direction(rel_type, end_label=end_label)
     existing = _existing(tx, start_label, start_key, end_label, end_key, rel_type)
     contributing = set(existing.get("contributing_story_cluster_ids", [])) if existing else set()
     already_seen = story_cluster_id in contributing
