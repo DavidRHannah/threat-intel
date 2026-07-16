@@ -1,8 +1,28 @@
+import re
+
 from neo4j import ManagedTransaction
+
+# Labels and relationship types cannot be parameterized in Cypher, so they must be
+# interpolated. Everything interpolated is validated first: this is the single library
+# every L1/L2/L3 graph write flows through.
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+class EndpointNotFoundError(LookupError):
+    """Raised when a MERGE's start or end node does not exist, so no edge was written."""
+
+
+def _check_identifier(value: str, what: str) -> str:
+    if not _IDENTIFIER.match(value):
+        raise ValueError(f"invalid {what}: {value!r}")
+    return value
 
 
 def _match_clause(var: str, label: str, key: dict) -> str:
-    props = ", ".join(f"{k}: ${var}_{k}" for k in key)
+    _check_identifier(label, "label")
+    props = ", ".join(
+        f"{_check_identifier(k, 'key property')}: ${var}_{k}" for k in key
+    )
     return f"({var}:{label} {{{props}}})"
 
 
@@ -21,6 +41,7 @@ def merge_relationship(
     params.update({f"b_{k}": v for k, v in end_key.items()})
     params["on_create"] = on_create
     params["on_match"] = on_match
+    _check_identifier(rel_type, "rel_type")
 
     query = f"""
     MATCH {_match_clause("a", start_label, start_key)},
@@ -32,13 +53,17 @@ def merge_relationship(
     MERGE (a)-[r:{rel_type}]->(b)
     ON CREATE SET r += $on_create
     ON MATCH  SET r += $on_match
-    RETURN CASE WHEN r.first_observed = $on_create_first_observed
-                THEN 'created' ELSE 'matched' END AS outcome
+    RETURN elementId(r) AS rid
     """
-    # Distinguish create/match without a second round-trip: compare a sentinel the caller
-    # is expected to put in on_create (first_observed) against what's on the relationship
-    # post-merge. Callers that don't set first_observed get 'matched' by convention — fine,
-    # since only assertion/evidence edges (which always set first_observed) need this signal.
-    params["on_create_first_observed"] = on_create.get("first_observed")
-    result = tx.run(query, **params).single()
-    return result["outcome"] if result else "matched"
+    # Endpoint existence and update-count are different questions: a matched edge whose
+    # on_match is empty (Task 6) writes nothing, so counters.contains_updates would be False
+    # for a perfectly good edge. The RETURN row proves the endpoints matched; the counter
+    # distinguishes create from match.
+    result = tx.run(query, **params)
+    record = result.single()
+    summary = result.consume()
+    if record is None:
+        raise EndpointNotFoundError(
+            f"no {start_label} {start_key} -> {end_label} {end_key} endpoints to link"
+        )
+    return "created" if summary.counters.relationships_created else "matched"
