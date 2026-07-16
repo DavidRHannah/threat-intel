@@ -46,12 +46,22 @@ def upsert_authoritative_assertion(
     origin.add("authoritative")
     feed_sources = set(existing.get("feed_sources", [])) if existing else set()
     feed_sources.add(feed_source)
-    confidence = max(credibility_score, existing.get("confidence", 0.0) if existing else 0.0)
+
+    # confidence is DERIVED from the two stored components, never ratcheted against the
+    # previously stored confidence -- see the Interfaces note and §6. Note we read
+    # inferred_confidence but never write it here: an authoritative write must not clobber
+    # the inferred component.
+    authoritative = max(
+        credibility_score,
+        existing.get("authoritative_confidence", 0.0) if existing else 0.0,
+    )
+    inferred = existing.get("inferred_confidence", 0.0) if existing else 0.0
 
     props = {
         "origin": sorted(origin),
         "feed_sources": sorted(feed_sources),
-        "confidence": confidence,
+        "authoritative_confidence": authoritative,
+        "confidence": max(authoritative, inferred),
         "last_confirmed": now,
     }
     on_create = {**props, "first_observed": now}
@@ -91,12 +101,14 @@ def upsert_inferred_assertion(
 
     origin = set(existing.get("origin", [])) if existing else set()
     origin.add("inferred")
-    confidence = max(inferred_confidence, existing.get("confidence", 0.0) if existing else 0.0)
+    # Derived from the stored components; the authoritative component is read, never written
+    # here. Absent on an inferred-only edge, hence the 0.0 default.
+    authoritative = existing.get("authoritative_confidence", 0.0) if existing else 0.0
 
     props = {
         "origin": sorted(origin),
         "inferred_confidence": inferred_confidence,
-        "confidence": confidence,
+        "confidence": max(authoritative, inferred_confidence),
         "source_article_ids": article_ids,
         # Monotonic count of article *contributions*, not of distinct articles: past the
         # cap, new ids are deduped against the capped `source_article_ids` list, so an

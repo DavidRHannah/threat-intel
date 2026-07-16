@@ -94,6 +94,35 @@ def test_two_distinct_clusters_combine_by_noisy_or(driver):
     assert r["supporting_article_count"] == 2
 
 
+def test_confidence_is_derived_from_components_not_ratcheted(driver):
+    # A ratchet (max against the previously stored confidence) passes every other test in
+    # this file. It is caught only by making a component FALL: here inferred_confidence is
+    # lowered out-of-band, exactly as L4's temporal decay will do. A ratchet leaves
+    # confidence at 0.9; deriving from the components gives max(0.6, 0.2) = 0.6.
+    now = datetime.now(timezone.utc)
+    with driver.session() as s:
+        s.execute_write(lambda tx: upsert_inferred_assertion(
+            tx, start_label="CVE", start_key={"cve_id": "CVE-2026-0002"},
+            end_label="ThreatActor", end_key={"merge_key": "apt-assert-test"},
+            rel_type="EXPLOITED_BY", story_cluster_id="sc-decay", contribution=0.9,
+            source_article_ids=["art-decay"], now=now,
+        ))
+        # Simulate L4 decay lowering the inferred component.
+        s.run(
+            "MATCH (:CVE {cve_id:'CVE-2026-0002'})-[r:EXPLOITED_BY]->"
+            "(:ThreatActor {merge_key:'apt-assert-test'}) SET r.inferred_confidence = 0.2"
+        ).consume()
+        s.execute_write(lambda tx: upsert_authoritative_assertion(
+            tx, start_label="CVE", start_key={"cve_id": "CVE-2026-0002"},
+            end_label="ThreatActor", end_key={"merge_key": "apt-assert-test"},
+            rel_type="EXPLOITED_BY", feed_source="otx", credibility_score=0.6, now=now,
+        ))
+    r = _edge(driver)
+    assert r["authoritative_confidence"] == 0.6
+    assert r["inferred_confidence"] == 0.2  # not clobbered by the authoritative write
+    assert r["confidence"] == 0.6  # FR-RG-05: max over origins, not a ratchet at 0.9
+
+
 def test_reprocessing_same_story_cluster_is_a_confidence_noop(driver):
     now = datetime.now(timezone.utc)
     with driver.session() as s:
