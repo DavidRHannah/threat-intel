@@ -1,20 +1,36 @@
 from datetime import datetime
 
 from src.common.config import get_config
-from src.common.graph.writer import merge_relationship
+from src.common.graph.writer import _check_identifier, _match_clause, merge_relationship
 
 
 def _existing(tx, start_label, start_key, end_label, end_key, rel_type):
-    match_a = ", ".join(f"{k}: $a_{k}" for k in start_key)
-    match_b = ", ".join(f"{k}: $b_{k}" for k in end_key)
+    """Read the current edge state under the endpoint lock.
+
+    Locks both endpoints itself rather than relying on merge_relationship's lock:
+    Neo4j takes no read locks, so an unlocked read here would let two concurrent
+    writers derive their writes from the same stale pre-state and lose one of the
+    two noisy-OR contributions. APOC locks are held to end of transaction, so
+    merge_relationship's later lock is a re-entrant no-op and the whole
+    read-modify-write serializes.
+
+    Validates its own interpolated identifiers: it runs BEFORE merge_relationship,
+    so without this the writer's ValueError contract never fires for these callers.
+    """
+    _check_identifier(rel_type, "rel_type")
     params = {f"a_{k}": v for k, v in start_key.items()}
     params.update({f"b_{k}": v for k, v in end_key.items()})
     row = tx.run(
-        f"MATCH (a:{start_label} {{{match_a}}})-[r:{rel_type}]->(b:{end_label} {{{match_b}}}) "
+        f"MATCH {_match_clause('a', start_label, start_key)}, "
+        f"      {_match_clause('b', end_label, end_key)} "
+        "WITH a, b, CASE WHEN elementId(a) <= elementId(b) THEN [a, b] ELSE [b, a] END AS ordered "
+        "CALL apoc.lock.nodes(ordered) "
+        "WITH a, b "
+        f"OPTIONAL MATCH (a)-[r:{rel_type}]->(b) "
         "RETURN r AS r",
         **params,
     ).single()
-    return dict(row["r"]) if row else None
+    return dict(row["r"]) if row and row["r"] is not None else None
 
 
 def _cap() -> int:
@@ -56,7 +72,10 @@ def upsert_inferred_assertion(
     already_seen = story_cluster_id in contributing
 
     if already_seen:
-        inferred_confidence = existing.get("inferred_confidence", contribution)
+        # `existing` cannot be None here: story_cluster_id can only be in `contributing`
+        # if the edge already exists. Index directly rather than falling back to a
+        # default so a broken invariant fails loudly instead of silently substituting.
+        inferred_confidence = existing["inferred_confidence"]
         article_ids = existing.get("source_article_ids", [])
         supporting_count = existing.get("supporting_article_count", len(article_ids))
     else:
@@ -79,6 +98,11 @@ def upsert_inferred_assertion(
         "inferred_confidence": inferred_confidence,
         "confidence": confidence,
         "source_article_ids": article_ids,
+        # Monotonic count of article *contributions*, not of distinct articles: past the
+        # cap, new ids are deduped against the capped `source_article_ids` list, so an
+        # article outside the stored window would be counted again. Overcounts, never
+        # undercounts; exact below the cap. Inherent to the capped design, not a bug —
+        # FR-RG-06 and technical-specification.md §3.2 were amended to match (2026-07-16).
         "supporting_article_count": supporting_count,
         # Not capped: this list IS the idempotency check. _cap() bounds source_article_ids
         # (a size/display concern); truncating cluster ids would make an evicted id read as
