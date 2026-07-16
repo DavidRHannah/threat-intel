@@ -25,3 +25,11 @@ def write_mentions_edge(
         end_label=entity_label, end_key=entity_key, rel_type="MENTIONS",
         on_create=props, on_match=props,
     )
+
+
+def write_published_by_edge(tx, *, article_ref: dict, source_key: dict) -> str:
+    return merge_relationship(
+        tx, start_label="Article", start_key=_article_start_key(article_ref),
+        end_label="Source", end_key=source_key, rel_type="PUBLISHED_BY",
+        on_create={}, on_match={},
+    )

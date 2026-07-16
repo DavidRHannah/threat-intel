@@ -4,7 +4,7 @@ import pytest
 from neo4j.exceptions import ConstraintError
 
 from src.common import natural_keys
-from src.common.graph.evidence_edges import write_mentions_edge
+from src.common.graph.evidence_edges import write_mentions_edge, write_published_by_edge
 from src.common.neo4j_driver import close_driver, get_driver
 from src.common.schema_bootstrap import bootstrap_schema
 
@@ -71,3 +71,22 @@ def test_duplicate_article_source_guid_key_raises_constraint_error(driver):
                 "CREATE (a:Article {source_guid_key: $article_key, test_fixture: true})",
                 article_key=ARTICLE_KEY,
             ).consume()
+
+
+def test_published_by_edge_is_unchanged_on_reprocess(driver):
+    with driver.session() as s:
+        s.run("MERGE (src:Source {url:'https://example.test/feed'}) SET src.test_fixture = true").consume()
+        s.execute_write(lambda tx: write_published_by_edge(
+            tx, article_ref=ARTICLE_REF,
+            source_key={"url": "https://example.test/feed"},
+        ))
+        s.execute_write(lambda tx: write_published_by_edge(
+            tx, article_ref=ARTICLE_REF,
+            source_key={"url": "https://example.test/feed"},
+        ))
+        count = s.run(
+            "MATCH (:Article {source_guid_key: $article_key})-[r:PUBLISHED_BY]->"
+            "(:Source {url:'https://example.test/feed'}) RETURN count(r) AS c",
+            article_key=ARTICLE_KEY,
+        ).single()["c"]
+    assert count == 1  # FR-RG-08
