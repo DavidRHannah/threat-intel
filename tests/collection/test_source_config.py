@@ -51,6 +51,40 @@ def test_sync_creates_source_nodes_and_dynamodb_rows(tmp_path, driver):
         assert rec["id"] == "krebs"
         assert rec["active"] is True
 
+def test_sync_missing_required_field_raises_value_error(tmp_path):
+    config_path = tmp_path / "sources.yaml"
+    config_path.write_text(
+        "- source_id: krebs\n"
+        "  name: Krebs on Security\n"
+        "  url: https://krebsonsecurity.com/feed/\n"
+        "  type: rss\n"
+        "  category: osint\n"
+        "  polling_tier: standard\n"
+    )
+    table = _FakeTable()
+
+    with pytest.raises(ValueError, match="credibility_score"):
+        sync_sources(str(config_path), table, driver=None)
+
+def test_sync_second_run_deactivates_zero(tmp_path, driver):
+    # No DynamoDB row for old-src, so the DynamoDB delete count is always 0 for this
+    # source; this isolates the Neo4j deactivation count (must be a true per-run delta,
+    # not a re-flag of every historically-removed source on every run).
+    config_path = tmp_path / "sources.yaml"
+    config_path.write_text("[]\n")
+    table = _FakeTable()
+    with driver.session() as s:
+        s.run(
+            "MERGE (src:Source {url: $url}) SET src.source_id = $id, src.is_active = true",
+            url="https://old.example/feed", id="old-src",
+        ).consume()
+
+    first = sync_sources(str(config_path), table, driver)
+    second = sync_sources(str(config_path), table, driver)
+
+    assert first.deactivated == 1
+    assert second.deactivated == 0
+
 def test_sync_deactivates_removed_sources_in_neo4j_but_deletes_from_dynamodb(tmp_path, driver):
     config_path = tmp_path / "sources.yaml"
     config_path.write_text("[]\n")

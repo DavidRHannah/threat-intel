@@ -22,18 +22,37 @@ _NEO4J_FIELDS = (
     "polling_tier",
 )
 
+_REQUIRED_FIELDS = (
+    "source_id",
+    "url",
+    "name",
+    "type",
+    "category",
+    "credibility_score",
+    "polling_tier",
+)
+
 
 @dataclass
 class SyncResult:
     created: int
     updated: int
     deactivated: int
+    dynamodb_deleted: int = 0
 
 
 def _load_config(config_path: str) -> list[dict]:
     with open(config_path) as f:
         entries = yaml.safe_load(f)
-    return entries or []
+    entries = entries or []
+    for entry in entries:
+        for field in _REQUIRED_FIELDS:
+            if entry.get(field) is None:
+                raise ValueError(
+                    f"config entry {entry.get('source_id', '<unknown>')!r} is missing "
+                    f"required field {field!r}"
+                )
+    return entries
 
 
 def _sync_dynamodb(entries: list[dict], dynamodb_table) -> tuple[int, int, int]:
@@ -58,7 +77,7 @@ def _sync_dynamodb(entries: list[dict], dynamodb_table) -> tuple[int, int, int]:
     return created, updated, deactivated
 
 
-def _sync_neo4j(entries: list[dict], driver) -> None:
+def _sync_neo4j(entries: list[dict], driver) -> int:
     config_ids = [entry["source_id"] for entry in entries]
 
     with driver.session() as session:
@@ -75,19 +94,27 @@ def _sync_neo4j(entries: list[dict], driver) -> None:
                 ).consume()
             )
 
-        session.execute_write(
+        result = session.execute_write(
             lambda tx: tx.run(
                 "MATCH (s:Source) WHERE NOT s.source_id IN $config_ids "
-                "SET s.is_active = false",
+                "AND s.is_active = true "
+                "SET s.is_active = false "
+                "RETURN count(s) AS n",
                 config_ids=config_ids,
-            ).consume()
+            ).single()
         )
+        return result["n"]
 
 
 def sync_sources(config_path: str, dynamodb_table, driver) -> SyncResult:
     entries = _load_config(config_path)
 
-    created, updated, deactivated = _sync_dynamodb(entries, dynamodb_table)
-    _sync_neo4j(entries, driver)
+    created, updated, dynamodb_deleted = _sync_dynamodb(entries, dynamodb_table)
+    deactivated = _sync_neo4j(entries, driver)
 
-    return SyncResult(created=created, updated=updated, deactivated=deactivated)
+    return SyncResult(
+        created=created,
+        updated=updated,
+        deactivated=deactivated,
+        dynamodb_deleted=dynamodb_deleted,
+    )
