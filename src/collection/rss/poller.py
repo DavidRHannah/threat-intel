@@ -6,7 +6,13 @@ discovery/update event per item onto the `discovery-updates` SQS queue for L1's
 Extraction Lambda (Task 5) to consume.
 
 FR-DC-04 (Must): sources are fanned out concurrently (`ThreadPoolExecutor`), each with
-a per-source timeout so one hanging feed cannot block the others.
+a per-source timeout so one hanging feed cannot block the others. The fetch itself is
+bounded at the socket level (`httpx` timeout in `_default_fetch`) so a genuine network
+hang raises a bounded, retryable exception instead of blocking the worker thread (and
+therefore `ThreadPoolExecutor.shutdown(wait=True)`) indefinitely. `PollingState` writes
+are owned exclusively by the worker (`_poll_one_source`) — the dispatcher's
+`future.result(timeout=...)` backstop only annotates the response payload on timeout,
+never writes PollingState, so a source is never recorded twice in one cycle.
 FR-DC-05 (Should): polling tiers/frequency are handled by the EventBridge schedule(s)
 that invoke this Lambda (CDK-level, Task 12) — out of scope here.
 FR-DC-06 (Must): a fetch that raises (timeout/connection-error/5xx) is retried within
@@ -215,23 +221,46 @@ def poll_sources(
             try:
                 results.append(future.result(timeout=timeout_seconds))
             except FuturesTimeoutError:
-                record_poll_outcome(polling_table, source_id, success=False)
-                _check_health_alert(
-                    polling_table, source_id, health_alert_threshold, alert_fn
-                )
+                # NOTE: this does NOT cancel the worker thread — Python threads cannot
+                # be force-killed. `record_poll_outcome`/`_check_health_alert` are
+                # deliberately NOT called here: the worker (`_poll_one_source`) is the
+                # sole owner of PollingState writes for this source and will record
+                # its own outcome (success or failure) whenever it actually finishes,
+                # exactly once. Writing here too would double-write PollingState in
+                # the same cycle. This branch exists only to surface a timeout in the
+                # response payload for observability; the executor's `__exit__`
+                # (`shutdown(wait=True)`) still waits for the worker to finish, but
+                # since `_default_fetch` now bounds the real fetch at the socket level
+                # (see below), a genuine network hang can no longer block that wait
+                # indefinitely. A pathological non-network hang (e.g. an infinite loop
+                # inside feed parsing) is not solvable this way and remains bounded
+                # only by the Lambda function's own timeout.
                 results.append({"source_id": source_id, "error": "timeout"})
     return results
 
 
-def _default_fetch(source: dict) -> Any:
+def _default_fetch(source: dict, timeout_seconds: float) -> Any:
+    """Fetch the feed bytes over HTTP with a bounded socket-level timeout, then hand
+    them to feedparser. Fetching via `httpx` (rather than letting feedparser open the
+    connection itself) is what bounds a genuine network hang: feedparser.parse(url)
+    sets no timeout of its own and can block forever on a hung socket, which the
+    outer `future.result(timeout=...)` does not prevent (it only stops the *caller*
+    waiting; the worker thread keeps running until ThreadPoolExecutor.shutdown(wait=True)
+    joins it). A bounded httpx timeout raises an httpx exception instead, which
+    `_fetch_with_retry`'s blanket except already treats as retryable."""
     import feedparser
+    import httpx
 
-    return feedparser.parse(source["url"])
+    response = httpx.get(source["url"], timeout=timeout_seconds, follow_redirects=True)
+    response.raise_for_status()
+    return feedparser.parse(response.content)
 
 
 def handler(event: dict, context: Any) -> dict:
     """Lambda entry point. Relies on the Lambda's ambient AWS region — never a
     hardcoded one (NFR-MAINT-01)."""
+    import functools
+
     import boto3
 
     dynamodb = boto3.resource("dynamodb")
@@ -240,14 +269,16 @@ def handler(event: dict, context: Any) -> dict:
     polling_table = dynamodb.Table("PollingState")
     sqs_client = boto3.client("sqs")
     queue_url = get_config("discovery_updates_queue_url")
+    timeout_seconds = float(get_config("rss_poll_timeout_seconds", default="8"))
 
     sources = sources_table.scan().get("Items", [])
     results = poll_sources(
         sources,
-        _default_fetch,
+        functools.partial(_default_fetch, timeout_seconds=timeout_seconds),
         dedup_table,
         polling_table,
         sqs_client,
         queue_url,
+        timeout_seconds=timeout_seconds,
     )
     return {"sources_polled": len(sources), "results": results}

@@ -71,6 +71,27 @@ class FakeSQS:
         return {"MessageId": "fake-message-id"}
 
 
+class CountingPollingTable:
+    """Wraps a real (moto) PollingState table, counting update_item calls per
+    source_id so tests can assert `record_poll_outcome` writes exactly once per
+    source per cycle (the double-write regression pin)."""
+
+    def __init__(self, table):
+        self._table = table
+        self.update_counts: dict[str, int] = {}
+
+    def get_item(self, **kwargs):
+        return self._table.get_item(**kwargs)
+
+    def update_item(self, **kwargs):
+        source_id = kwargs["Key"]["source_id"]
+        self.update_counts[source_id] = self.update_counts.get(source_id, 0) + 1
+        return self._table.update_item(**kwargs)
+
+    def put_item(self, **kwargs):
+        return self._table.put_item(**kwargs)
+
+
 class PutLoggingTable:
     """Wraps a real (moto) DynamoDB table, logging only put_item calls, so the
     FR-DC-11 ordering test's log contains exactly the two calls it cares about."""
@@ -221,12 +242,46 @@ def test_fetch_retried_within_configured_cap(dedup_table, polling_table):
     assert len(sqs.sent) == 1
 
 
+def test_fetch_retry_stops_at_cap_under_persistent_failure(dedup_table, polling_table):
+    """A fetch that ALWAYS raises is attempted exactly retry_cap + 1 times, not more
+    (FR-DC-06 cap under persistent failure — the happy-path retry test above only
+    proves single-transient recovery, which is trivially <= the cap)."""
+    source = {"source_id": "src-1", "url": "http://example.com/feed"}
+    retry_cap = 3
+    call_count = {"n": 0}
+
+    def always_fails(_source):
+        call_count["n"] += 1
+        raise ConnectionError("simulated persistent 5xx")
+
+    sqs = FakeSQS()
+    results = poll_sources(
+        [source],
+        always_fails,
+        dedup_table,
+        polling_table,
+        sqs,
+        "http://queue-url",
+        timeout_seconds=1,
+        retry_cap=retry_cap,
+        health_alert_threshold=6,
+        sleep_fn=lambda _seconds: None,
+    )
+
+    assert call_count["n"] == retry_cap + 1
+    assert results == [{"source_id": "src-1", "error": "simulated persistent 5xx"}]
+
+
 # --- FR-DC-04 ------------------------------------------------------------------------
 
 
 def test_concurrent_dispatch_one_hanging_source_does_not_block_others(dedup_table, polling_table):
     """3 sources are dispatched concurrently; one hangs past its per-source timeout,
-    but the cycle still completes for the other two (FR-DC-04)."""
+    but the cycle still completes for the other two (FR-DC-04). Also pins the
+    single-write invariant: `record_poll_outcome` must be written exactly once per
+    source in the cycle, even for the source whose future timed out from the
+    dispatcher's point of view but whose worker later finishes on its own (the
+    double-write regression this task fixes)."""
     sources = [
         {"source_id": "src-1", "url": "http://example.com/feed1"},
         {"source_id": "src-2", "url": "http://example.com/feed2"},
@@ -242,12 +297,13 @@ def test_concurrent_dispatch_one_hanging_source_does_not_block_others(dedup_tabl
         return make_feed([])
 
     sqs = FakeSQS()
+    counting_polling_table = CountingPollingTable(polling_table)
     start = time.monotonic()
     results = poll_sources(
         sources,
         fetch_fn,
         dedup_table,
-        polling_table,
+        counting_polling_table,
         sqs,
         "http://queue-url",
         timeout_seconds=0.05,
@@ -264,6 +320,13 @@ def test_concurrent_dispatch_one_hanging_source_does_not_block_others(dedup_tabl
     assert by_source["src-2"]["error"] == "timeout"
     # bounded by the hanging fetch's own sleep, not by any real 8s default
     assert elapsed < 2
+
+    # Single-write invariant (regression pin for the double-write finding): the
+    # ThreadPoolExecutor context manager's __exit__ has already joined every worker
+    # by the time poll_sources returns, so src-2's worker has finished and recorded
+    # its own outcome by now. Every source — including src-2 — must have exactly one
+    # PollingState write in this cycle, never two.
+    assert counting_polling_table.update_counts == {"src-1": 1, "src-2": 1, "src-3": 1}
 
 
 # --- FR-DC-14 / FR-DC-15 ---------------------------------------------------------------
