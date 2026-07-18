@@ -8,6 +8,11 @@ dependencies = [
     "boto3==1.40.40",
     "aws-cdk-lib==2.260.0",
     "constructs>=10.0.0,<11.0.0",
+    "feedparser==6.0.11",
+    "stix2==3.0.1",
+    "trafilatura==2.0.0",
+    "httpx==0.28.1",
+    "PyYAML==6.0.2",
 ]
 
 [project.optional-dependencies]
