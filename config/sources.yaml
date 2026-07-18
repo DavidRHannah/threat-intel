@@ -1,0 +1,115 @@
+# Crossroads L1 source configuration — the git-tracked source of truth for feeds (FR-DC-16).
+# sync_sources() reconciles this file into DynamoDB (Sources table, live mirror — rows are
+# deleted when a source is removed here) and Neo4j (Source nodes are flagged is_active=false
+# when removed, never deleted, to preserve provenance for Articles that already reference them).
+#
+# Fields:
+#   source_id          - stable identifier; DynamoDB partition key.
+#   name                - human-readable display name.
+#   url                 - feed/API endpoint; Neo4j Source natural key (UNIQUE constrained).
+#   type                - rss | api.
+#   category            - osint | vuln_feed | threat_feed | framework.
+#   credibility_score   - float in [0, 1]; consumed by L3 credibility recompute.
+#   polling_tier        - standard | frequent | daily (poll cadence bucket).
+#   auth_param_ref      - SSM SecureString parameter name holding the API key/token, or null.
+#   api_version         - upstream API version pinned against, or null for RSS.
+
+- source_id: krebs
+  name: Krebs on Security
+  url: https://krebsonsecurity.com/feed/
+  type: rss
+  category: osint
+  credibility_score: 0.9
+  polling_tier: standard
+  auth_param_ref: null
+  api_version: null
+
+- source_id: bleepingcomputer
+  name: BleepingComputer
+  url: https://www.bleepingcomputer.com/feed/
+  type: rss
+  category: osint
+  credibility_score: 0.85
+  polling_tier: standard
+  auth_param_ref: null
+  api_version: null
+
+- source_id: nvd-cve
+  name: NVD CVE Feed
+  url: https://services.nvd.nist.gov/rest/json/cves/2.0
+  type: api
+  category: vuln_feed
+  credibility_score: 1.0
+  polling_tier: frequent
+  auth_param_ref: /crossroads/sources/nvd/api_key
+  api_version: "2.0"
+
+- source_id: cisa-kev
+  name: CISA Known Exploited Vulnerabilities Catalog
+  url: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+  type: api
+  category: vuln_feed
+  credibility_score: 1.0
+  polling_tier: daily
+  auth_param_ref: null
+  api_version: null
+
+- source_id: ghsa
+  name: GitHub Security Advisories
+  url: https://api.github.com/graphql
+  type: api
+  category: vuln_feed
+  credibility_score: 0.95
+  polling_tier: frequent
+  auth_param_ref: /crossroads/sources/ghsa/api_token
+  api_version: "v4"
+
+- source_id: otx
+  name: AlienVault OTX
+  url: https://otx.alienvault.com/api/v1/pulses/subscribed
+  type: api
+  category: threat_feed
+  credibility_score: 0.75
+  polling_tier: frequent
+  auth_param_ref: /crossroads/sources/otx/api_key
+  api_version: "v1"
+
+- source_id: urlhaus
+  name: abuse.ch URLhaus
+  url: https://urlhaus.abuse.ch/downloads/json_recent/
+  type: api
+  category: threat_feed
+  credibility_score: 0.85
+  polling_tier: frequent
+  auth_param_ref: null
+  api_version: null
+
+- source_id: malwarebazaar
+  name: abuse.ch MalwareBazaar
+  url: https://mb-api.abuse.ch/api/v1/
+  type: api
+  category: threat_feed
+  credibility_score: 0.85
+  polling_tier: frequent
+  auth_param_ref: /crossroads/sources/malwarebazaar/api_key
+  api_version: "v1"
+
+- source_id: threatfox
+  name: abuse.ch ThreatFox
+  url: https://threatfox-api.abuse.ch/api/v1/
+  type: api
+  category: threat_feed
+  credibility_score: 0.85
+  polling_tier: frequent
+  auth_param_ref: /crossroads/sources/threatfox/api_key
+  api_version: "v1"
+
+- source_id: mitre-attack
+  name: MITRE ATT&CK Enterprise
+  url: https://raw.githubusercontent.com/mitre/cti/master/enterprise-attack/enterprise-attack.json
+  type: api
+  category: framework
+  credibility_score: 1.0
+  polling_tier: daily
+  auth_param_ref: null
+  api_version: null
