@@ -11,7 +11,10 @@ FR-DC-20 (Must): 429 -> respect `Retry-After` if present and parseable, else fal
 to exponential backoff (`base * 2**attempt`), raising `RetryAfterError` either way.
 FR-DC-21 (Must): a 200 body that fails a supplied `schema_validator` -> `NoRetryError`
 (a shape change is a bug to fix, not a transient failure to retry).
-Also (not FR-mandated but needed to complete "success vs. not"): 5xx -> `RetryableError`.
+Also (not FR-mandated but needed to complete "success vs. not"): 5xx -> `RetryableError`;
+any other status code not explicitly recognized as retryable/rate-limited/auth-failure
+(3xx, or a 4xx other than 401/403/429) -> `NoRetryError`, without ever calling
+`response.json()` on it.
 """
 
 from typing import Any, Callable, Protocol
@@ -76,7 +79,10 @@ def handle_response(
         no validator was given).
 
     Raises:
-        NoRetryError: on 401/403, or on a 200 body failing `schema_validator`.
+        NoRetryError: on 401/403, on a 2xx body failing `schema_validator`, or on any
+            other status code not otherwise recognized here (3xx, or a 4xx other than
+            401/403/429) — an unclassified status is treated as non-retryable rather
+            than silently parsed as if it were a success.
         RetryAfterError: on 429, carrying `retry_after_seconds`.
         RetryableError: on 5xx.
     """
@@ -100,6 +106,9 @@ def handle_response(
 
     if 500 <= status_code < 600:
         raise RetryableError(f"server error (HTTP {status_code})")
+
+    if not (200 <= status_code < 300):
+        raise NoRetryError(f"unexpected/unclassified response status (HTTP {status_code})")
 
     body = response.json()
     if schema_validator is not None and not schema_validator(body):

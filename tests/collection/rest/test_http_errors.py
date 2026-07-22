@@ -157,3 +157,33 @@ def test_200_with_no_validator_returns_dict():
 
     result = handle_response(response, alert_fn=lambda r: None)
     assert result == body
+
+
+def test_201_with_no_validator_returns_dict():
+    """A non-200 2xx success status still parses and returns the body."""
+    body = {"created": True}
+    response = FakeResponse(201, body=body)
+
+    result = handle_response(response, alert_fn=lambda r: None)
+    assert result == body
+
+
+# --- Unclassified status codes (3xx, or 4xx other than 401/403/429) -> NoRetryError,
+# and response.json() must never be called for them (an HTML/non-JSON error body must
+# not crash the classifier with an unhandled JSONDecodeError). ---
+
+
+class _JsonRaisesIfCalled(FakeResponse):
+    """A FakeResponse whose .json() blows up if it is ever invoked, so the test proves
+    handle_response never attempts to parse the body for an unclassified status."""
+
+    def json(self) -> dict:
+        raise AssertionError("response.json() must not be called for an unclassified status")
+
+
+@pytest.mark.parametrize("status_code", [301, 404])
+def test_unclassified_status_raises_no_retry_without_parsing_body(status_code):
+    response = _JsonRaisesIfCalled(status_code)
+
+    with pytest.raises(NoRetryError):
+        handle_response(response, alert_fn=lambda r: None)
