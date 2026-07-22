@@ -98,6 +98,7 @@ def driver():
             "MATCH (n) WHERE n.test_fixture = true "
             "OR (n:IOC AND n.value_type_key IN $keys) "
             "OR (n:MalwareFamily AND n.merge_key = 'emotet') "
+            "OR (n:Source AND n.source_id = 'threatfox') "
             "DETACH DELETE n",
             keys=ioc_keys,
         ).consume()
@@ -107,10 +108,21 @@ def driver():
             "MATCH (n) WHERE n.test_fixture = true "
             "OR (n:IOC AND n.value_type_key IN $keys) "
             "OR (n:MalwareFamily AND n.merge_key = 'emotet') "
+            "OR (n:Source AND n.source_id = 'threatfox') "
             "DETACH DELETE n",
             keys=ioc_keys,
         ).consume()
     close_driver()
+
+
+def _seed_source_credibility(driver, source_id: str, credibility_score: float) -> None:
+    with driver.session() as s:
+        s.run(
+            "MERGE (s:Source {source_id: $source_id}) "
+            "SET s.credibility_score = $score, s.test_fixture = true",
+            source_id=source_id,
+            score=credibility_score,
+        ).consume()
 
 
 @pytest.fixture
@@ -272,6 +284,7 @@ class TestThreatFox:
         assert all(u.natural_key["merge_key"] == "emotet" for u in family_upserts)
 
     def test_merges_iocs_family_and_edges(self, driver, aws):
+        _seed_source_credibility(driver, "threatfox", 0.63)
         client = FakeHttpClient(FakeResponse(_load("threatfox_recent.json")))
         now = datetime(2026, 7, 22, tzinfo=timezone.utc)
 
@@ -310,6 +323,10 @@ class TestThreatFox:
         assert comm is not None
         assert sample_edge is not None
         assert "authoritative" in dict(comm["r"])["origin"]
+        # Source.credibility_score (seeded above) flows through as authoritative_confidence,
+        # not the old hardcoded ABUSECH_CREDIBILITY_SCORE placeholder.
+        assert dict(comm["r"])["authoritative_confidence"] == 0.63
+        assert dict(sample_edge["r"])["authoritative_confidence"] == 0.63
 
         messages = aws["sqs"].receive_message(
             QueueUrl=aws["queue_url"], MaxNumberOfMessages=10
@@ -321,6 +338,19 @@ class TestThreatFox:
         client = FakeHttpClient(FakeResponse(_load("threatfox_recent.json")))
         process_threatfox(driver, client, now=datetime.now(timezone.utc))
         assert client.calls[0]["headers"]["Auth-Key"] == "test-threatfox-key"
+
+    def test_missing_source_falls_back_to_default_credibility(self, driver, aws):
+        # No Source node seeded at all -- must fall back rather than raise or block the write.
+        client = FakeHttpClient(FakeResponse(_load("threatfox_recent.json")))
+        process_threatfox(driver, client, now=datetime.now(timezone.utc))
+
+        with driver.session() as s:
+            comm = s.run(
+                "MATCH (:MalwareFamily {merge_key:'emotet'})-[r:COMMUNICATES_WITH]->"
+                "(:IOC {value_type_key:$k}) RETURN r",
+                k=natural_keys.ioc_key("185.220.101.5:443", "ip:port"),
+            ).single()
+        assert dict(comm["r"])["authoritative_confidence"] == 0.5  # documented default
 
     def test_401_routes_through_handle_response(self, driver):
         client = FakeHttpClient(FakeResponse({}, status_code=401))

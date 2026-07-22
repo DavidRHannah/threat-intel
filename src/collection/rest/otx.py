@@ -14,9 +14,17 @@ campaign/threat. Per pulse:
   "these IOCs indicate this vulnerability is being actively exploited" -- so each
   non-CVE IOC in a pulse gets an `INDICATES` edge (IOC->CVE per
   `technical-specification.md` §3.2; `validate_edge_direction` enforces this, never
-  `ASSOCIATED_WITH`) to every CVE referenced in the SAME pulse, written via
+  `ASSOCIATED_WITH`), written via
   `src.common.graph.assertion_edges.upsert_authoritative_assertion` inside
   `session.execute_write(...)` and announced via `publish_graph_write`.
+  **Scoped to pulses with exactly one CVE tag** (task-9 review finding, 2026-07-22): a
+  pulse with one CVE tag plausibly has every one of its IOCs indicating that single CVE
+  (the common OTX pattern of a pulse built around one vulnerability), so all its IOCs get
+  an edge to that CVE. A pulse with zero CVE tags has nothing to indicate. A pulse with
+  two or more CVE tags does **not** get any `INDICATES` edges: which IOC indicates which
+  CVE is ambiguous from OTX's flat tag list alone, and writing an edge from every IOC to
+  every CVE would be an unjustified cross-product, not a real relationship. Revisit if
+  OTX ever exposes a per-indicator CVE association instead of a flat per-pulse tag list.
   `ASSOCIATED_WITH` (ThreatActor/Campaign->IOC) is deliberately NOT written here: this
   task's scope (`FR-DC-01 (Must, for IOC, MalwareFamily, CVE stubs)`) does not include
   ThreatActor/Campaign node creation, and OTX's `adversary`/`tags` fields are free text
@@ -32,7 +40,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from src.collection.rest.http_errors import handle_response
-from src.collection.rest.normalizer import NodeUpsert
+from src.collection.rest.normalizer import NodeUpsert, read_source_credibility_score
 from src.collection.rest.nvd import enrich_cve
 from src.collection.rest.ssm_credentials import load_credential
 from src.common import natural_keys
@@ -41,12 +49,6 @@ from src.common.graph.assertion_edges import upsert_authoritative_assertion
 from src.common.graph.publish import publish_graph_write
 
 SOURCE_ID = "otx"
-
-# TODO(task-9): should read Source.credibility_score for source_id="otx" instead of a
-# fixed representative value; reading the actual Source node felt like scope creep for
-# this task (see task-9-report.md). OTX pulses are crowdsourced/analyst-submitted, so a
-# mid-range value reflecting "corroborating, not authoritative on its own" was chosen.
-OTX_CREDIBILITY_SCORE = 0.7
 
 _TYPE_MAP = {
     "IPv4": "ip",
@@ -143,18 +145,34 @@ def _apply_cve_tx(tx, cve_id: str) -> str:
     return outcome
 
 
-def _write_indicates_edge_tx(tx, *, value: str, ioc_type: str, cve_id: str, now) -> str:
-    return upsert_authoritative_assertion(
-        tx,
-        start_label="IOC",
-        start_key={"value_type_key": natural_keys.ioc_key(value, ioc_type)},
-        end_label="CVE",
-        end_key={"cve_id": cve_id},
-        rel_type="INDICATES",
-        feed_source=SOURCE_ID,
-        credibility_score=OTX_CREDIBILITY_SCORE,
-        now=now,
-    )
+def _write_pulse_indicates_edges_tx(
+    tx, *, ioc_values: list[tuple[str, str]], cve_id: str, now
+) -> list[tuple[str, str, str]]:
+    """Write every IOC->CVE `INDICATES` edge for a single-CVE pulse inside ONE
+    transaction (one `session.execute_write` per pulse, not one per edge pair).
+
+    Only called when a pulse has exactly one CVE tag -- see the module docstring for why
+    multi-CVE pulses are skipped entirely rather than writing a cross-product.
+
+    Returns (value, ioc_type, outcome) per edge so the caller can announce each one via
+    `publish_graph_write` after the transaction commits.
+    """
+    credibility_score = read_source_credibility_score(tx, SOURCE_ID)
+    results: list[tuple[str, str, str]] = []
+    for value, ioc_type in ioc_values:
+        outcome = upsert_authoritative_assertion(
+            tx,
+            start_label="IOC",
+            start_key={"value_type_key": natural_keys.ioc_key(value, ioc_type)},
+            end_label="CVE",
+            end_key={"cve_id": cve_id},
+            rel_type="INDICATES",
+            feed_source=SOURCE_ID,
+            credibility_score=credibility_score,
+            now=now,
+        )
+        results.append((value, ioc_type, outcome))
+    return results
 
 
 def _alert(_response: Any) -> None:
@@ -165,9 +183,10 @@ def _alert(_response: Any) -> None:
 
 def process_otx(driver, http_client: _HttpClient, nvd_http_client: _HttpClient, *, now) -> int:
     """Fetch subscribed OTX pulses, MERGE each pulse's IOCs and lazy-create/enrich any
-    referenced CVEs (FR-DC-22), then write an `INDICATES` edge from every IOC in a pulse
-    to every CVE referenced in that SAME pulse, announced via `publish_graph_write`.
-    Returns the count of newly-created CVE stubs.
+    referenced CVEs (FR-DC-22), then -- for pulses with exactly one CVE tag only -- write
+    an `INDICATES` edge from every IOC in the pulse to that one CVE (one transaction per
+    pulse), announced via `publish_graph_write`. Pulses with zero or 2+ CVE tags write no
+    `INDICATES` edges (see module docstring). Returns the count of newly-created CVE stubs.
     """
     api_key = load_credential(SOURCE_ID, "api_key")
     response = http_client.get(_otx_url(), headers={"X-OTX-API-KEY": api_key})
@@ -189,17 +208,26 @@ def process_otx(driver, http_client: _HttpClient, nvd_http_client: _HttpClient, 
 
     with driver.session() as session:
         for pulse in pulses:
-            for cve_id in pulse.cve_ids:
-                for value, ioc_type in pulse.ioc_values:
-                    outcome = session.execute_write(
-                        _write_indicates_edge_tx, value=value, ioc_type=ioc_type, cve_id=cve_id, now=now
-                    )
-                    publish_graph_write(
-                        rel_type="INDICATES",
-                        start_key={"value_type_key": natural_keys.ioc_key(value, ioc_type)},
-                        end_key={"cve_id": cve_id},
-                        outcome=outcome,
-                        origin="authoritative",
-                    )
+            if len(pulse.cve_ids) != 1:
+                # Multi-CVE pulses: which IOC indicates which CVE is ambiguous from OTX's
+                # flat tag list alone; skip rather than write a false cross-product.
+                # Revisit if OTX exposes per-indicator CVE association. Zero-CVE pulses:
+                # nothing to indicate.
+                continue
+            cve_id = pulse.cve_ids[0]
+            edges = session.execute_write(
+                _write_pulse_indicates_edges_tx,
+                ioc_values=pulse.ioc_values,
+                cve_id=cve_id,
+                now=now,
+            )
+            for value, ioc_type, outcome in edges:
+                publish_graph_write(
+                    rel_type="INDICATES",
+                    start_key={"value_type_key": natural_keys.ioc_key(value, ioc_type)},
+                    end_key={"cve_id": cve_id},
+                    outcome=outcome,
+                    origin="authoritative",
+                )
 
     return len(newly_created)

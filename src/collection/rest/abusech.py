@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from src.collection.rest.http_errors import handle_response
-from src.collection.rest.normalizer import NodeUpsert
+from src.collection.rest.normalizer import NodeUpsert, read_source_credibility_score
 from src.collection.rest.ssm_credentials import load_credential
 from src.common import natural_keys
 from src.common.config import get_config
@@ -47,12 +47,6 @@ from src.common.graph.publish import publish_graph_write
 URLHAUS_SOURCE_ID = "urlhaus"
 MALWAREBAZAAR_SOURCE_ID = "malwarebazaar"
 THREATFOX_SOURCE_ID = "threatfox"
-
-# TODO(task-9): should read each feed's Source.credibility_score instead of a fixed
-# representative value; reading the actual Source node felt like scope creep for this
-# task (see task-9-report.md). All three abuse.ch feeds are community/vendor-curated
-# malware-intel feeds of comparable standing, hence one shared constant.
-ABUSECH_CREDIBILITY_SCORE = 0.85
 
 _HASH_TYPES = {"md5_hash", "sha1_hash", "sha256_hash"}
 
@@ -289,6 +283,11 @@ def _merge_malware_family_tx(tx, merge_key: str, properties: dict) -> None:
 
 
 def _write_threatfox_edge_tx(tx, *, entry: ParsedThreatFoxEntry, now) -> str:
+    # Read Source.credibility_score inside this same transaction (never a separate round
+    # trip) so it can't observe a stale/uncommitted Source state relative to the edge
+    # write it feeds -- see read_source_credibility_score's docstring for the fallback
+    # behavior if the Source node is missing.
+    credibility_score = read_source_credibility_score(tx, THREATFOX_SOURCE_ID)
     return upsert_authoritative_assertion(
         tx,
         start_label="MalwareFamily",
@@ -297,7 +296,7 @@ def _write_threatfox_edge_tx(tx, *, entry: ParsedThreatFoxEntry, now) -> str:
         end_key={"value_type_key": natural_keys.ioc_key(entry.value, entry.ioc_type)},
         rel_type=entry.rel_type,
         feed_source=THREATFOX_SOURCE_ID,
-        credibility_score=ABUSECH_CREDIBILITY_SCORE,
+        credibility_score=credibility_score,
         now=now,
     )
 

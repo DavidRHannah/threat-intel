@@ -71,6 +71,9 @@ def _clear_config_cache(monkeypatch):
     config.get_config.cache_clear()
 
 
+_CVE_IDS = ("CVE-2026-2002", "CVE-2026-3003", "CVE-2026-3004")
+
+
 @pytest.fixture
 def driver():
     d = get_driver()
@@ -83,22 +86,35 @@ def driver():
     with d.session() as s:
         s.run(
             "MATCH (n) WHERE n.test_fixture = true "
-            "OR (n:CVE AND n.cve_id = 'CVE-2026-2002') "
+            "OR (n:CVE AND n.cve_id IN $cve_ids) "
             "OR (n:IOC AND n.value_type_key IN $keys) "
+            "OR (n:Source AND n.source_id = 'otx') "
             "DETACH DELETE n",
             keys=ioc_keys,
+            cve_ids=list(_CVE_IDS),
         ).consume()
         s.run("MERGE (w:CWE {cwe_id:'CWE-502'})").consume()
     yield d
     with d.session() as s:
         s.run(
             "MATCH (n) WHERE n.test_fixture = true "
-            "OR (n:CVE AND n.cve_id = 'CVE-2026-2002') "
+            "OR (n:CVE AND n.cve_id IN $cve_ids) "
             "OR (n:IOC AND n.value_type_key IN $keys) "
+            "OR (n:Source AND n.source_id = 'otx') "
             "DETACH DELETE n",
             keys=ioc_keys,
+            cve_ids=list(_CVE_IDS),
         ).consume()
     close_driver()
+
+
+def _seed_source_credibility(driver, credibility_score: float) -> None:
+    with driver.session() as s:
+        s.run(
+            "MERGE (s:Source {source_id: 'otx'}) "
+            "SET s.credibility_score = $score, s.test_fixture = true",
+            score=credibility_score,
+        ).consume()
 
 
 def _ioc_props(driver, value: str, ioc_type: str) -> dict | None:
@@ -170,6 +186,7 @@ def test_normalize_returns_ioc_and_cve_upserts():
 
 
 def test_pulse_merges_iocs_lazy_cve_and_indicates_edges(driver, aws):
+    _seed_source_credibility(driver, 0.42)
     otx_client = FakeHttpClient(FakeResponse(_load("otx_pulses.json")))
     nvd_client = FakeNvdHttpClient(FakeResponse(_load("nvd_single_cve.json")))
     now = datetime(2026, 7, 22, tzinfo=timezone.utc)
@@ -191,6 +208,9 @@ def test_pulse_merges_iocs_lazy_cve_and_indicates_edges(driver, aws):
     for e in edges:
         assert "authoritative" in e["origin"]
         assert e["feed_sources"] == ["otx"]
+        # Source.credibility_score (seeded above) flows through as authoritative_confidence,
+        # not the old hardcoded OTX_CREDIBILITY_SCORE placeholder.
+        assert e["authoritative_confidence"] == 0.42
 
     # publish_graph_write announced both edges (edge-shaped, via SQS subscribed to the
     # moto-mocked graph-writes SNS topic).
@@ -200,6 +220,89 @@ def test_pulse_merges_iocs_lazy_cve_and_indicates_edges(driver, aws):
     bodies = [json.loads(json.loads(m["Body"])["Message"]) for m in messages]
     assert len(bodies) == 2
     assert all(b["rel_type"] == "INDICATES" for b in bodies)
+
+
+def test_missing_source_falls_back_to_default_credibility(driver, aws):
+    # No Source node seeded at all -- must fall back rather than raise or block the write.
+    otx_client = FakeHttpClient(FakeResponse(_load("otx_pulses.json")))
+    nvd_client = FakeNvdHttpClient(FakeResponse(_load("nvd_single_cve.json")))
+    now = datetime(2026, 7, 22, tzinfo=timezone.utc)
+
+    process_otx(driver, otx_client, nvd_client, now=now)
+
+    edges = _indicates_edges(driver, "CVE-2026-2002")
+    assert len(edges) == 2
+    for e in edges:
+        assert e["authoritative_confidence"] == 0.5  # documented default fallback
+
+
+def test_multi_cve_pulse_writes_no_indicates_edges(driver, aws):
+    # A pulse tagging 2+ CVEs is ambiguous (which IOC indicates which CVE?) -- IOCs and CVE
+    # stubs still get MERGEd, but no INDICATES cross-product is written.
+    body = {
+        "count": 1,
+        "next": None,
+        "results": [
+            {
+                "id": "multi-cve-pulse",
+                "indicators": [
+                    {"indicator": "198.51.100.23", "type": "IPv4"},
+                    {"indicator": "evil-c2.example.net", "type": "domain"},
+                    {"indicator": "CVE-2026-3003", "type": "CVE"},
+                    {"indicator": "CVE-2026-3004", "type": "CVE"},
+                ],
+            }
+        ],
+    }
+    otx_client = FakeHttpClient(FakeResponse(body))
+    nvd_client = FakeNvdHttpClient(FakeResponse(_load("nvd_single_cve.json")))
+    now = datetime(2026, 7, 22, tzinfo=timezone.utc)
+
+    created_count = process_otx(driver, otx_client, nvd_client, now=now)
+
+    assert created_count == 2  # both CVE stubs still created
+    assert _ioc_props(driver, "198.51.100.23", "ip") is not None
+    assert _ioc_props(driver, "evil-c2.example.net", "domain") is not None
+    assert _cve_props(driver, "CVE-2026-3003") is not None
+    assert _cve_props(driver, "CVE-2026-3004") is not None
+
+    assert _indicates_edges(driver, "CVE-2026-3003") == []
+    assert _indicates_edges(driver, "CVE-2026-3004") == []
+
+    messages = aws["sqs"].receive_message(QueueUrl=aws["queue_url"], MaxNumberOfMessages=10).get(
+        "Messages", []
+    )
+    assert messages == []  # no edges written, nothing announced
+
+
+def test_zero_cve_pulse_writes_no_indicates_edges(driver, aws):
+    body = {
+        "count": 1,
+        "next": None,
+        "results": [
+            {
+                "id": "no-cve-pulse",
+                "indicators": [
+                    {"indicator": "198.51.100.23", "type": "IPv4"},
+                    {"indicator": "evil-c2.example.net", "type": "domain"},
+                ],
+            }
+        ],
+    }
+    otx_client = FakeHttpClient(FakeResponse(body))
+    nvd_client = FakeNvdHttpClient(FakeResponse(_load("nvd_single_cve.json")))
+    now = datetime(2026, 7, 22, tzinfo=timezone.utc)
+
+    created_count = process_otx(driver, otx_client, nvd_client, now=now)
+
+    assert created_count == 0  # no CVE tags at all
+    assert _ioc_props(driver, "198.51.100.23", "ip") is not None
+    assert _ioc_props(driver, "evil-c2.example.net", "domain") is not None
+
+    messages = aws["sqs"].receive_message(QueueUrl=aws["queue_url"], MaxNumberOfMessages=10).get(
+        "Messages", []
+    )
+    assert messages == []
 
 
 def test_credential_loaded_via_load_credential_never_hardcoded(driver, aws):

@@ -10,6 +10,34 @@ FR-DC-18.
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+DEFAULT_SOURCE_CREDIBILITY_SCORE = 0.5
+
+
+def read_source_credibility_score(
+    tx, source_id: str, *, default: float = DEFAULT_SOURCE_CREDIBILITY_SCORE
+) -> float:
+    """Read `Source.credibility_score` for `source_id`, to feed a real
+    `upsert_authoritative_assertion` call instead of a hardcoded placeholder.
+
+    `Source` nodes are populated by `src.collection.source_config.sync_sources` from
+    `config/sources.yaml` on every deploy, so this should always find a real value in
+    practice. If the `Source` node or its `credibility_score` property is missing anyway
+    (e.g. a source referenced before its first deploy-time sync), fall back to `default`
+    rather than raising: this is enrichment metadata for scoring, not a hard dependency,
+    and a missing `Source` must not block the IOC/edge write it's attached to.
+
+    Must be called from inside the same `session.execute_write(tx, ...)` transaction
+    that writes the assertion edge -- never a separate round trip -- so the read can't
+    observe a stale or uncommitted `Source` state relative to the write it feeds.
+    """
+    row = tx.run(
+        "MATCH (s:Source {source_id: $source_id}) RETURN s.credibility_score AS score",
+        source_id=source_id,
+    ).single()
+    if row is None or row["score"] is None:
+        return default
+    return row["score"]
+
 
 @dataclass
 class NodeUpsert:
