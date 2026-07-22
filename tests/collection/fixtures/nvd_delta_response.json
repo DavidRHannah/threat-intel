@@ -1,0 +1,130 @@
+{
+  "resultsPerPage": 3,
+  "startIndex": 0,
+  "totalResults": 3,
+  "format": "NVD_CVE",
+  "version": "2.0",
+  "timestamp": "2026-07-20T12:00:00.000",
+  "vulnerabilities": [
+    {
+      "cve": {
+        "id": "CVE-2026-1001",
+        "sourceIdentifier": "cve@mitre.org",
+        "published": "2026-01-10T08:00:00.000",
+        "lastModified": "2026-07-19T09:30:00.000",
+        "vulnStatus": "Analyzed",
+        "descriptions": [
+          {"lang": "en", "value": "A SQL injection flaw in the Acme reporting module allows remote attackers to read arbitrary data."},
+          {"lang": "es", "value": "Una vulnerabilidad de inyeccion SQL."}
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+                "baseScore": 7.5,
+                "baseSeverity": "HIGH"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "nvd@nist.gov",
+            "type": "Primary",
+            "description": [
+              {"lang": "en", "value": "CWE-89"}
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:acme:reporting:1.2.0:*:*:*:*:*:*:*",
+                    "matchCriteriaId": "aaaa-bbbb-cccc"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2026-1002",
+        "sourceIdentifier": "cve@mitre.org",
+        "published": "2026-06-01T00:00:00.000",
+        "lastModified": "2026-07-18T14:00:00.000",
+        "vulnStatus": "Analyzed",
+        "descriptions": [
+          {"lang": "en", "value": "A cross-site scripting flaw in WidgetCMS permits injection of arbitrary HTML."}
+        ],
+        "metrics": {
+          "cvssMetricV31": [
+            {
+              "source": "nvd@nist.gov",
+              "type": "Primary",
+              "cvssData": {
+                "version": "3.1",
+                "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N",
+                "baseScore": 6.1,
+                "baseSeverity": "MEDIUM"
+              }
+            }
+          ]
+        },
+        "weaknesses": [
+          {
+            "source": "nvd@nist.gov",
+            "type": "Primary",
+            "description": [
+              {"lang": "en", "value": "CWE-79"}
+            ]
+          }
+        ],
+        "configurations": [
+          {
+            "nodes": [
+              {
+                "operator": "OR",
+                "negate": false,
+                "cpeMatch": [
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:widget:widgetcms:3.4.1:*:*:*:*:*:*:*",
+                    "matchCriteriaId": "dddd-eeee-ffff"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "cve": {
+        "id": "CVE-2026-1003",
+        "sourceIdentifier": "cve@mitre.org",
+        "published": "2026-07-15T00:00:00.000",
+        "lastModified": "2026-07-17T10:00:00.000",
+        "vulnStatus": "Awaiting Analysis",
+        "descriptions": [
+          {"lang": "en", "value": "An unauthenticated path traversal in FileServe exposes local files."}
+        ],
+        "metrics": {},
+        "weaknesses": [],
+        "configurations": []
+      }
+    }
+  ]
+}
