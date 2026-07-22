@@ -1,0 +1,38 @@
+{
+  "data": {
+    "securityAdvisories": {
+      "nodes": [
+        {
+          "ghsaId": "GHSA-abcd-1234-efgh",
+          "summary": "Prototype pollution in acme-json-utils",
+          "description": "acme-json-utils before 2.3.1 allows prototype pollution via the merge() helper, potentially leading to remote code execution in consumers that pass user input to merge().",
+          "severity": "HIGH",
+          "publishedAt": "2026-07-10T09:00:00Z",
+          "updatedAt": "2026-07-11T10:00:00Z",
+          "identifiers": [
+            {"type": "GHSA", "value": "GHSA-abcd-1234-efgh"},
+            {"type": "CVE", "value": "CVE-2026-2002"}
+          ],
+          "references": [
+            {"url": "https://github.com/acme/json-utils/security/advisories/GHSA-abcd-1234-efgh"}
+          ]
+        },
+        {
+          "ghsaId": "GHSA-wxyz-5678-ijkl",
+          "summary": "Path traversal in acme-static-server (no CVE assigned yet)",
+          "description": "A path traversal issue in acme-static-server allows reading files outside the served directory root.",
+          "severity": "MODERATE",
+          "publishedAt": "2026-07-19T09:00:00Z",
+          "updatedAt": "2026-07-19T09:00:00Z",
+          "identifiers": [
+            {"type": "GHSA", "value": "GHSA-wxyz-5678-ijkl"}
+          ],
+          "references": [
+            {"url": "https://github.com/acme/static-server/security/advisories/GHSA-wxyz-5678-ijkl"}
+          ]
+        }
+      ],
+      "pageInfo": {"hasNextPage": false, "endCursor": null}
+    }
+  }
+}
