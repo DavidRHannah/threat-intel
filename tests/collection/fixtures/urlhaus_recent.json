@@ -1,0 +1,15 @@
+{
+  "query_status": "ok",
+  "urls": [
+    {
+      "id": "3001234",
+      "url": "http://evil-drop.example/payload.exe",
+      "url_status": "online",
+      "host": "evil-drop.example",
+      "date_added": "2026-07-20 10:00:00 UTC",
+      "threat": "malware_download",
+      "tags": ["exe", "elf"],
+      "urlhaus_reference": "https://urlhaus.abuse.ch/url/3001234/"
+    }
+  ]
+}

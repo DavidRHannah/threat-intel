@@ -1,0 +1,27 @@
+{
+  "query_status": "ok",
+  "data": [
+    {
+      "id": "1234567",
+      "ioc": "185.220.101.5:443",
+      "ioc_type": "ip:port",
+      "threat_type": "botnet_cc",
+      "malware": "win.emotet",
+      "malware_printable": "Emotet",
+      "confidence_level": 80,
+      "first_seen": "2026-07-20 08:00:00 UTC",
+      "reference": "https://threatfox.abuse.ch/ioc/1234567/"
+    },
+    {
+      "id": "1234568",
+      "ioc": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+      "ioc_type": "sha256_hash",
+      "threat_type": "payload",
+      "malware": "win.emotet",
+      "malware_printable": "Emotet",
+      "confidence_level": 90,
+      "first_seen": "2026-07-20 08:05:00 UTC",
+      "reference": "https://threatfox.abuse.ch/ioc/1234568/"
+    }
+  ]
+}
