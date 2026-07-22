@@ -1,0 +1,120 @@
+{
+  "type": "bundle",
+  "id": "bundle--34237a00-0166-43a9-8c23-68e49a068b5a",
+  "spec_version": "2.1",
+  "objects": [
+    {
+      "type": "attack-pattern",
+      "spec_version": "2.1",
+      "id": "attack-pattern--803cfba3-6321-4e3a-9766-5732328b46a2",
+      "created": "2020-01-01T00:00:00.000Z",
+      "modified": "2020-06-01T00:00:00.000Z",
+      "name": "Phishing",
+      "description": "Adversaries may send phishing messages to gain access to victim systems.",
+      "kill_chain_phases": [
+        {"kill_chain_name": "mitre-attack", "phase_name": "initial-access"}
+      ],
+      "external_references": [
+        {"source_name": "mitre-attack", "external_id": "T1566", "url": "https://attack.mitre.org/techniques/T1566"}
+      ],
+      "x_mitre_domains": ["enterprise-attack"],
+      "x_mitre_deprecated": true,
+      "revoked": false
+    },
+    {
+      "type": "intrusion-set",
+      "spec_version": "2.1",
+      "id": "intrusion-set--597270aa-cac2-45ff-ba32-e8d8750289ac",
+      "created": "2020-01-01T00:00:00.000Z",
+      "modified": "2020-06-01T00:00:00.000Z",
+      "name": "APT28",
+      "description": "A threat group attributed to Russia's GRU.",
+      "aliases": ["APT28", "Fancy Bear", "Sofacy"],
+      "external_references": [
+        {"source_name": "mitre-attack", "external_id": "G0007", "url": "https://attack.mitre.org/groups/G0007"}
+      ],
+      "x_mitre_deprecated": false,
+      "revoked": false
+    },
+    {
+      "type": "malware",
+      "spec_version": "2.1",
+      "id": "malware--e6c5b06c-24a0-4c79-9e76-9c0b60a2b3b2",
+      "created": "2020-01-01T00:00:00.000Z",
+      "modified": "2020-06-01T00:00:00.000Z",
+      "name": "Cobalt Strike",
+      "description": "A commercial adversary simulation tool repurposed by threat actors.",
+      "malware_types": ["remote-access-trojan"],
+      "is_family": true,
+      "aliases": ["Cobalt Strike"],
+      "external_references": [
+        {"source_name": "mitre-attack", "external_id": "S0154", "url": "https://attack.mitre.org/software/S0154"}
+      ],
+      "x_mitre_deprecated": false,
+      "revoked": true,
+      "x_mitre_revoked_by_id": "S0621"
+    },
+    {
+      "type": "campaign",
+      "spec_version": "2.1",
+      "id": "campaign--fbe76008-b49b-4584-8415-a48da003d29d",
+      "created": "2020-01-01T00:00:00.000Z",
+      "modified": "2020-06-01T00:00:00.000Z",
+      "name": "Frankenstein",
+      "description": "A campaign composed of malware from several open source projects.",
+      "aliases": ["Frankenstein"],
+      "first_seen": "2019-01-01T00:00:00.000Z",
+      "last_seen": "2019-04-01T00:00:00.000Z",
+      "objective": "Espionage",
+      "external_references": [
+        {"source_name": "mitre-attack", "external_id": "C0001", "url": "https://attack.mitre.org/campaigns/C0001"}
+      ],
+      "x_mitre_deprecated": false,
+      "revoked": false
+    },
+    {
+      "type": "relationship",
+      "spec_version": "2.1",
+      "id": "relationship--ca7f5a42-ec2e-429d-b794-81e1447845fe",
+      "created": "2020-01-01T00:00:00.000Z",
+      "modified": "2020-06-01T00:00:00.000Z",
+      "relationship_type": "uses",
+      "source_ref": "intrusion-set--597270aa-cac2-45ff-ba32-e8d8750289ac",
+      "target_ref": "attack-pattern--803cfba3-6321-4e3a-9766-5732328b46a2",
+      "description": "APT28 uses Phishing."
+    },
+    {
+      "type": "relationship",
+      "spec_version": "2.1",
+      "id": "relationship--6c06f042-c231-4d71-88a6-628a8393918a",
+      "created": "2020-01-01T00:00:00.000Z",
+      "modified": "2020-06-01T00:00:00.000Z",
+      "relationship_type": "uses",
+      "source_ref": "malware--e6c5b06c-24a0-4c79-9e76-9c0b60a2b3b2",
+      "target_ref": "attack-pattern--803cfba3-6321-4e3a-9766-5732328b46a2",
+      "description": "Cobalt Strike uses Phishing."
+    },
+    {
+      "type": "relationship",
+      "spec_version": "2.1",
+      "id": "relationship--955f64cb-dc28-4606-9261-30f89aeaf0ce",
+      "created": "2020-01-01T00:00:00.000Z",
+      "modified": "2020-06-01T00:00:00.000Z",
+      "relationship_type": "uses",
+      "source_ref": "campaign--fbe76008-b49b-4584-8415-a48da003d29d",
+      "target_ref": "malware--e6c5b06c-24a0-4c79-9e76-9c0b60a2b3b2",
+      "description": "Frankenstein uses Cobalt Strike."
+    },
+    {
+      "type": "relationship",
+      "spec_version": "2.1",
+      "id": "relationship--867dcf5c-0c26-4ac4-8228-d362bd279f9d",
+      "created": "2020-01-01T00:00:00.000Z",
+      "modified": "2020-06-01T00:00:00.000Z",
+      "relationship_type": "attributed-to",
+      "source_ref": "campaign--fbe76008-b49b-4584-8415-a48da003d29d",
+      "target_ref": "intrusion-set--597270aa-cac2-45ff-ba32-e8d8750289ac",
+      "description": "Frankenstein is attributed to APT28."
+    }
+  ]
+}

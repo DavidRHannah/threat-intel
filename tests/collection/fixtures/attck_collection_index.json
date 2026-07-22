@@ -1,0 +1,17 @@
+{
+  "enterprise-attack": {
+    "domain": "enterprise-attack",
+    "name": "Enterprise ATT&CK",
+    "version": "14.1"
+  },
+  "mobile-attack": {
+    "domain": "mobile-attack",
+    "name": "Mobile ATT&CK",
+    "version": "3.1"
+  },
+  "ics-attack": {
+    "domain": "ics-attack",
+    "name": "ICS ATT&CK",
+    "version": "2.1"
+  }
+}
