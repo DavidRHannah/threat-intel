@@ -144,7 +144,7 @@ def test_delta_poll_updates_existing_and_never_creates(driver):
         ).consume()
 
     client = FakeHttpClient(_load("nvd_delta_response.json"))
-    count = poll_nvd_delta(driver, client, "2026-07-10T00:00:00.000")
+    count, _window_end = poll_nvd_delta(driver, client, "2026-07-10T00:00:00.000")
 
     updated = _cve_props(driver, "CVE-2026-1001")
     assert updated is not None
@@ -256,6 +256,36 @@ def test_stale_payload_does_not_resurrect_dropped_cwe(driver):
     enrich_cve(driver, FakeHttpClient(stale), "CVE-2026-9999")
 
     assert _cwe_ids(driver, "CVE-2026-9999") == {"CWE-79"}  # CWE-89 NOT resurrected
+
+
+def test_enrich_creates_missing_cwe_stub_node(driver):
+    """Regression (Critical): nothing in src/ MERGEs a CWE node, yet resync_categorized_as
+    goes through merge_relationship, which MATCHes both endpoints and raises
+    EndpointNotFoundError if the CWE is absent. Every other test here pre-seeds the CWE via
+    the `driver` fixture (CWE-79/89/502), masking the real production shape: an existing CVE
+    carrying a CWE for which no node exists. `_apply_cve_tx` must MERGE the CWE stub before
+    the re-sync. Uses CWE-611 (NOT pre-seeded) to reproduce the gap.
+    """
+    # Real production shape: the CVE exists, but no CWE-611 node has ever been created.
+    with driver.session() as s:
+        s.run(
+            "MERGE (c:CVE {cve_id:'CVE-2026-6011'}) SET c.test_fixture = true"
+        ).consume()
+        assert s.run("MATCH (w:CWE {cwe_id:'CWE-611'}) RETURN w").single() is None
+
+    try:
+        payload = _cve_envelope("CVE-2026-6011", "2026-07-20T00:00:00.000", ["CWE-611"], 8.1)
+        enrich_cve(driver, FakeHttpClient(payload), "CVE-2026-6011")
+
+        # The stub node now exists and the CATEGORIZED_AS edge was created.
+        with driver.session() as s:
+            assert (
+                s.run("MATCH (w:CWE {cwe_id:'CWE-611'}) RETURN w").single() is not None
+            )
+        assert _cwe_ids(driver, "CVE-2026-6011") == {"CWE-611"}
+    finally:
+        with driver.session() as s:
+            s.run("MATCH (w:CWE {cwe_id:'CWE-611'}) DETACH DELETE w").consume()
 
 
 def test_normalizer_parses_fixture_shape():

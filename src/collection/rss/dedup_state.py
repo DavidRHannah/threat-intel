@@ -37,19 +37,26 @@ def put_fingerprint(table: Any, source_id: str, guid: str, fingerprint: str) -> 
     )
 
 
-def record_poll_outcome(table: Any, source_id: str, *, success: bool) -> None:
+def record_poll_outcome(
+    table: Any, source_id: str, *, success: bool, success_at: str | None = None
+) -> None:
     """Record the outcome of a poll attempt for source_id (FR-DC-14).
 
     On failure, increments `consecutive_failures`. On success, resets
-    `consecutive_failures` to 0 and sets `last_success_at` to the current UTC time.
+    `consecutive_failures` to 0 and sets `last_success_at`. Callers whose next poll window
+    must start exactly where this poll's fetch window ended (the NVD delta) pass
+    `success_at` — the single instant captured before the fetch — so the stored watermark
+    is that same instant, not a later `now()` that would open a self-widening gap. When
+    omitted, the current UTC time is used (the RSS poller, whose window is not watermarked).
     """
     if success:
+        stamp = success_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
         table.update_item(
             Key={"source_id": source_id},
             UpdateExpression="SET consecutive_failures = :zero, last_success_at = :now",
             ExpressionAttributeValues={
                 ":zero": 0,
-                ":now": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                ":now": stamp,
             },
         )
     else:

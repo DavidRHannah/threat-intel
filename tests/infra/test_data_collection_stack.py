@@ -11,6 +11,8 @@ Synth runs real Docker bundling (per CLAUDE.md's "it must run"): the Lambdas' as
 `pip install` their third-party deps in the Python 3.12 bundling image.
 """
 
+import json
+
 import aws_cdk as cdk
 from aws_cdk.assertions import Match, Template
 
@@ -143,16 +145,31 @@ def test_epss_runs_as_a_step_function_on_a_daily_rule():
 
 
 def test_poller_has_no_neo4j_ssm_grant():
-    """NFR-SEC-02 least-privilege: the poller never touches Neo4j, so its role must not
-    carry a neo4j_* SSM read grant (the graph-writing Lambdas do)."""
-    _, stack = _template()
-    template = Template.from_stack(stack)
-    for policy in template.find_resources("AWS::IAM::Policy").values():
-        statements = policy["Properties"]["PolicyDocument"]["Statement"]
-        rendered = str(statements)
-        # The poller's inline policy would only ever reference its DynamoDB tables and the
-        # queue-url SSM param, never neo4j_*. A neo4j grant appearing on a role that also
-        # has the Sources table grant would be the leak we are guarding against. This is a
-        # coarse check: assert no policy grants BOTH the Sources table and a neo4j param.
-        if "sources" in rendered and "neo4j" in rendered:
-            raise AssertionError("poller role appears to carry a neo4j SSM grant")
+    """NFR-SEC-02 least-privilege: the poller never touches Neo4j, so ITS OWN role's policy
+    must not carry a neo4j_* SSM read grant (the graph-writing Lambdas do).
+
+    Scoped to the poller's specific inline policy resource — the one `grant_ssm_read` would
+    add the neo4j params to if it were mistakenly called on `poller_fn.role`. The previous
+    version stringified every policy and looked for `"sources"` and `"neo4j"` co-occurring
+    in ONE policy; since CDK emits a separate policy per role, no single policy ever mixes
+    those substrings regardless of the grant, so it passed trivially and had no teeth.
+    """
+    template, _ = _template()
+    # `role.add_to_principal_policy` (grant_ssm_read) lands on the role's default policy;
+    # the poller's is `PollerFunctionServiceRoleDefaultPolicy*`.
+    poller_policies = {
+        lid: res
+        for lid, res in template.find_resources("AWS::IAM::Policy").items()
+        if lid.startswith("PollerFunctionServiceRoleDefaultPolicy")
+    }
+    assert poller_policies, "could not locate the poller's inline policy to scope the check"
+
+    for lid, policy in poller_policies.items():
+        document = policy["Properties"]["PolicyDocument"]
+        # A neo4j grant renders as an ssm:GetParameter statement whose Resource ARN ends in
+        # /neo4j_uri|user|password (see the graph Lambdas' policies). Serialize the whole
+        # document and assert no neo4j parameter name is referenced anywhere in it.
+        rendered = json.dumps(document, default=str)
+        assert "neo4j" not in rendered, (
+            f"poller policy {lid} carries a neo4j SSM grant: {rendered}"
+        )

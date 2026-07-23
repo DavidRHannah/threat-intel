@@ -2,10 +2,12 @@
 
 Two entry points, both routing their HTTP response through `handle_response` (Task 7):
 
-- `poll_nvd_delta(driver, http_client, last_success_at) -> int`
+- `poll_nvd_delta(driver, http_client, last_success_at) -> (int, str)`
   Fetches CVEs modified since `last_success_at` (FR-DC-17) and updates the fields of
   CVEs that ALREADY EXIST in the graph — it never creates a node for a CVE the graph
-  has not otherwise referenced (FR-DC-23). Returns the count of existing CVEs updated.
+  has not otherwise referenced (FR-DC-23). Returns `(count of existing CVEs updated,
+  window_end)`, where `window_end` is the instant captured before the fetch that the
+  handler records as the next poll's watermark (see `handler`).
 
 - `enrich_cve(driver, http_client, cve_id) -> None`
   On-demand single-CVE enrichment. A caller (GHSA/CISA-KEV, Task 9) MERGEs a bare CVE
@@ -210,6 +212,13 @@ def _apply_cve_tx(tx, parsed: ParsedCve, *, allow_create: bool) -> str:
         ).consume()
 
     if _is_newer(parsed.last_modified, stored_lmd):
+        # L3's merge_relationship MATCHes both endpoints and never creates nodes (node
+        # creation is the calling layer's job). Nothing else in src/ MERGEs a CWE, so the
+        # CVE->CWE re-sync would raise EndpointNotFoundError on any real CVE carrying a CWE.
+        # MERGE each CWE stub here, inside this same execute_write transaction, before the
+        # re-sync. The cwe_id_unique constraint (schema_bootstrap.py) makes this idempotent.
+        for cwe_id in parsed.cwe_ids:
+            tx.run("MERGE (:CWE {cwe_id: $id})", id=cwe_id).consume()
         resync_categorized_as(
             tx,
             cve_key={"cve_id": parsed.cve_id},
@@ -233,15 +242,23 @@ def _alert(_response: Any) -> None:
     pass
 
 
-def poll_nvd_delta(driver, http_client: _HttpClient, last_success_at: str) -> int:
+def poll_nvd_delta(
+    driver, http_client: _HttpClient, last_success_at: str
+) -> tuple[int, str]:
     """Fetch CVEs modified since `last_success_at` and update EXISTING CVEs only.
 
-    Returns the number of already-present CVE nodes whose fields were updated. CVEs in
-    the delta that are not already in the graph are ignored (FR-DC-23).
+    Returns `(updated, window_end)`: the number of already-present CVE nodes whose fields
+    were updated, and the single instant captured before the fetch that was used as the
+    request's `lastModEndDate`. The caller records `window_end` as the next poll's
+    `last_success_at` so the next window starts exactly where this one ended — recording a
+    fresh `now()` instead would leave a gap in which a CVE modified once is never re-polled.
+    CVEs in the delta not already in the graph are ignored (FR-DC-23).
     """
+    # One captured instant: the fetch-window end AND the next poll's window start.
+    window_end = datetime.now(timezone.utc).isoformat()
     params = {
         "lastModStartDate": last_success_at,  # FR-DC-17
-        "lastModEndDate": datetime.now(timezone.utc).isoformat(),
+        "lastModEndDate": window_end,
     }
     response = http_client.get(_nvd_url(), params=params)
     body = handle_response(response, alert_fn=_alert)
@@ -253,7 +270,7 @@ def poll_nvd_delta(driver, http_client: _HttpClient, last_success_at: str) -> in
             outcome = session.execute_write(_apply_cve_tx, record, allow_create=False)
             if outcome != "absent":
                 updated += 1
-    return updated
+    return updated, window_end
 
 
 _NVD_SOURCE_ID = "nvd"
@@ -294,8 +311,11 @@ def handler(event: dict, context: Any, *, driver=None, http_client: _HttpClient 
     ).isoformat()
 
     try:
-        updated = poll_nvd_delta(driver, http_client, last_success_at)
-        record_poll_outcome(polling_table, _NVD_SOURCE_ID, success=True)
+        updated, window_end = poll_nvd_delta(driver, http_client, last_success_at)
+        # Record the fetch-window end as the next poll's watermark, NOT a fresh now().
+        record_poll_outcome(
+            polling_table, _NVD_SOURCE_ID, success=True, success_at=window_end
+        )
         return {"cves_updated": updated}
     except Exception:
         record_poll_outcome(polling_table, _NVD_SOURCE_ID, success=False)

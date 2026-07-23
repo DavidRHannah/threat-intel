@@ -109,7 +109,7 @@ def test_nvd_handler_reads_last_success_at_and_records_outcome(polling_table, mo
     def fake_poll(driver, http_client, last_success_at):
         seen["last_success_at"] = last_success_at
         seen["driver"] = driver
-        return 7
+        return 7, "2026-07-23T00:00:00+00:00"
 
     monkeypatch.setattr(nvd, "poll_nvd_delta", fake_poll)
     driver = _FakeDriver()
@@ -126,7 +126,10 @@ def test_nvd_handler_reads_last_success_at_and_records_outcome(polling_table, mo
 def test_nvd_handler_defaults_lookback_when_no_state(polling_table, monkeypatch):
     monkeypatch.setenv("POLLING_STATE_TABLE_NAME", "crossroads-test-pollingstate")
     seen = {}
-    monkeypatch.setattr(nvd, "poll_nvd_delta", lambda d, h, lsa: seen.setdefault("lsa", lsa) or 0)
+    monkeypatch.setattr(
+        nvd, "poll_nvd_delta",
+        lambda d, h, lsa: (seen.setdefault("lsa", lsa) and 0, "2026-07-23T00:00:00+00:00"),
+    )
     nvd.handler({}, None, driver=_FakeDriver(), http_client=object())
     # A default ISO timestamp (not None) was synthesized for the first-run window.
     assert seen["lsa"].endswith("+00:00")
@@ -143,6 +146,64 @@ def test_nvd_handler_records_failure_and_reraises(polling_table, monkeypatch):
         nvd.handler({}, None, driver=_FakeDriver(), http_client=object())
     item = polling_table.get_item(Key={"source_id": "nvd"})["Item"]
     assert item["consecutive_failures"] == 1
+
+
+class _NoopSession:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute_write(self, *a, **k):  # never reached when the NVD body is empty
+        raise AssertionError("no CVEs to write")
+
+
+class _SessionDriver:
+    """A driver whose empty-body poll never dereferences a session body."""
+
+    def session(self):
+        return _NoopSession()
+
+
+class _CapturingHttp:
+    def __init__(self, body):
+        self._body = body
+        self.calls: list[dict] = []
+
+    def get(self, url, params=None):
+        self.calls.append({"url": url, "params": params or {}})
+        return _NvdResponse(self._body)
+
+
+class _NvdResponse:
+    def __init__(self, body):
+        self._body = body
+        self.status_code = 200
+        self.headers: dict = {}
+
+    def json(self):
+        return self._body
+
+
+def test_nvd_handler_records_the_fetch_window_end_not_a_later_now(polling_table, monkeypatch):
+    """Regression (Important): the delta poll's `lastModEndDate` (its fetch-window end) and
+    the `last_success_at` recorded for the next poll's window start must be ONE captured
+    instant, not two independent `now()` calls. Two `now()`s leave a gap in which a CVE
+    modified once and not again is silently never re-polled. Assert the recorded
+    last_success_at equals the exact lastModEndDate sent to NVD.
+    """
+    monkeypatch.setenv("POLLING_STATE_TABLE_NAME", "crossroads-test-pollingstate")
+    polling_table.put_item(
+        Item={"source_id": "nvd", "last_success_at": "2026-07-01T00:00:00+00:00"}
+    )
+
+    http = _CapturingHttp({"version": "2.0", "vulnerabilities": []})
+    nvd.handler({}, None, driver=_SessionDriver(), http_client=http)
+
+    window_end = http.calls[0]["params"]["lastModEndDate"]
+    item = polling_table.get_item(Key={"source_id": "nvd"})["Item"]
+    assert item["last_success_at"] == window_end
 
 
 def test_cisa_handler_passes_one_client_for_both_seams(monkeypatch):
