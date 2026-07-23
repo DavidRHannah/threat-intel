@@ -258,15 +258,23 @@ def _default_fetch(source: dict, timeout_seconds: float) -> Any:
 
 def handler(event: dict, context: Any) -> dict:
     """Lambda entry point. Relies on the Lambda's ambient AWS region — never a
-    hardcoded one (NFR-MAINT-01)."""
+    hardcoded one (NFR-MAINT-01).
+
+    The three DynamoDB tables are resolved from environment variables set by the CDK
+    stack (Task 12), never from literal short names: the deployed tables are named
+    `crossroads-{env}-{name.lower()}` (`00-infra.md` Task 11), so a hardcoded
+    `Table("Sources")` would raise `ResourceNotFoundException` in every real env. The
+    stack wires `SOURCES_TABLE_NAME`/`DEDUP_STATE_TABLE_NAME`/`POLLING_STATE_TABLE_NAME`
+    to `foundation.tables[...].table_name`."""
     import functools
+    import os
 
     import boto3
 
     dynamodb = boto3.resource("dynamodb")
-    sources_table = dynamodb.Table("Sources")
-    dedup_table = dynamodb.Table("DedupState")
-    polling_table = dynamodb.Table("PollingState")
+    sources_table = dynamodb.Table(os.environ["SOURCES_TABLE_NAME"])
+    dedup_table = dynamodb.Table(os.environ["DEDUP_STATE_TABLE_NAME"])
+    polling_table = dynamodb.Table(os.environ["POLLING_STATE_TABLE_NAME"])
     sqs_client = boto3.client("sqs")
     queue_url = get_config("discovery_updates_queue_url")
     timeout_seconds = float(get_config("rss_poll_timeout_seconds", default="8"))

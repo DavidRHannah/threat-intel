@@ -34,6 +34,7 @@ FR-DC-01 (IOC, MalwareFamily).
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from src.collection.rest.http_errors import handle_response
@@ -336,3 +337,54 @@ def process_threatfox(driver, http_client: _HttpClient, *, now) -> int:
             )
 
     return len(entries)
+
+
+# --- Lambda entry points (Fast/15-min tier) --------------------------------------
+#
+# Three independent handlers, one per feed -- matching the "no shared abuse.ch client"
+# design decision (design Part 4 §12). Each resolves the shared Neo4j driver and a real
+# `httpx` client (seams injectable for tests) and calls its feed's process function.
+
+
+def _resolve_seams(driver, http_client: _HttpClient | None) -> tuple[Any, _HttpClient, bool]:
+    close_client = False
+    if http_client is None:
+        import httpx
+
+        http_client = httpx.Client()
+        close_client = True
+    if driver is None:
+        from src.common.neo4j_driver import get_driver
+
+        driver = get_driver()
+    return driver, http_client, close_client
+
+
+def urlhaus_handler(event=None, context=None, *, driver=None, http_client: _HttpClient | None = None) -> dict:
+    """Lambda entry point for the URLhaus recent-activity pull (Fast/15-min tier)."""
+    driver, http_client, close_client = _resolve_seams(driver, http_client)
+    try:
+        return {"iocs_processed": process_urlhaus(driver, http_client)}
+    finally:
+        if close_client:
+            http_client.close()
+
+
+def malwarebazaar_handler(event=None, context=None, *, driver=None, http_client: _HttpClient | None = None) -> dict:
+    """Lambda entry point for the MalwareBazaar recent-samples pull (Fast/15-min tier)."""
+    driver, http_client, close_client = _resolve_seams(driver, http_client)
+    try:
+        return {"iocs_processed": process_malwarebazaar(driver, http_client)}
+    finally:
+        if close_client:
+            http_client.close()
+
+
+def threatfox_handler(event=None, context=None, *, driver=None, http_client: _HttpClient | None = None) -> dict:
+    """Lambda entry point for the ThreatFox recent-IOC pull (Fast/15-min tier)."""
+    driver, http_client, close_client = _resolve_seams(driver, http_client)
+    try:
+        return {"iocs_processed": process_threatfox(driver, http_client, now=datetime.now(timezone.utc))}
+    finally:
+        if close_client:
+            http_client.close()

@@ -37,6 +37,7 @@ FR-DC-22, FR-DC-01 (IOC, CVE stub).
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from src.collection.rest.http_errors import handle_response
@@ -231,3 +232,32 @@ def process_otx(driver, http_client: _HttpClient, nvd_http_client: _HttpClient, 
                 )
 
     return len(newly_created)
+
+
+def handler(event=None, context=None, *, driver=None, http_client: _HttpClient | None = None) -> dict:
+    """Lambda entry point for the hourly OTX pull (Standard/hourly tier).
+
+    One `httpx` client serves both the OTX pulse fetch and on-demand NVD enrichment of
+    newly-referenced CVEs. `now` is the transaction clock for the `INDICATES` edge
+    upserts (`publish_graph_write` resolves the topic ARN via `get_config`, populated by
+    the CDK stack as an env var). Seams are injectable for tests.
+    """
+    close_client = False
+    if http_client is None:
+        import httpx
+
+        http_client = httpx.Client()
+        close_client = True
+    if driver is None:
+        from src.common.neo4j_driver import get_driver
+
+        driver = get_driver()
+
+    try:
+        created = process_otx(
+            driver, http_client, http_client, now=datetime.now(timezone.utc)
+        )
+        return {"cves_created": created}
+    finally:
+        if close_client:
+            http_client.close()

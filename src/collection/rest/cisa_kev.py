@@ -128,3 +128,29 @@ def process_cisa_kev(driver, http_client: _HttpClient, nvd_http_client: _HttpCli
         enrich_cve(driver, nvd_http_client, cve_id)
 
     return len(newly_created)
+
+
+def handler(event=None, context=None, *, driver=None, http_client: _HttpClient | None = None) -> dict:
+    """Lambda entry point for the daily CISA KEV pull (Slow/daily tier).
+
+    CISA KEV needs no credential (spec §6). One `httpx` client serves both the KEV
+    catalog fetch and the on-demand NVD enrichment of any newly-referenced CVE (both are
+    plain keyless GETs). Seams are injectable for tests.
+    """
+    close_client = False
+    if http_client is None:
+        import httpx
+
+        http_client = httpx.Client()
+        close_client = True
+    if driver is None:
+        from src.common.neo4j_driver import get_driver
+
+        driver = get_driver()
+
+    try:
+        created = process_cisa_kev(driver, http_client, http_client)
+        return {"cves_created": created}
+    finally:
+        if close_client:
+            http_client.close()

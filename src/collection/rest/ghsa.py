@@ -223,3 +223,46 @@ def process_ghsa(
         enrich_cve(driver, nvd_http_client, cve_id)
 
     return len(newly_created)
+
+
+def handler(
+    event=None,
+    context=None,
+    *,
+    driver=None,
+    http_client: _HttpClient | None = None,
+    sns_client: Any = None,
+) -> dict:
+    """Lambda entry point for the hourly GHSA pull (Standard/hourly tier).
+
+    One `httpx` client serves both the GHSA GraphQL call and the on-demand NVD
+    enrichment of newly-referenced CVEs. The Article announcement is a node-shaped
+    `sns.publish` to the `graph-writes` topic (never `publish_graph_write` — see the
+    module docstring); the topic ARN is resolved via
+    `get_config("graph_writes_topic_arn")`, populated by the CDK stack as an env var.
+    Seams are injectable for tests.
+    """
+    close_client = False
+    if http_client is None:
+        import httpx
+
+        http_client = httpx.Client()
+        close_client = True
+    if driver is None:
+        from src.common.neo4j_driver import get_driver
+
+        driver = get_driver()
+    if sns_client is None:
+        import boto3
+
+        sns_client = boto3.client("sns")
+
+    topic_arn = get_config("graph_writes_topic_arn")
+    try:
+        created = process_ghsa(
+            driver, http_client, http_client, sns_client=sns_client, topic_arn=topic_arn
+        )
+        return {"cves_created": created}
+    finally:
+        if close_client:
+            http_client.close()

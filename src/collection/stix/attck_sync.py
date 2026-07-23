@@ -314,3 +314,120 @@ def sync_attck(
         _sync_domain_bundle(driver, domain, bundle_raw, now=now)
         newly_ingested[domain] = version
     return newly_ingested
+
+
+_ATTCK_SOURCE_ID = "mitre_attck"
+_GITHUB_RAW_BASE = (
+    "https://raw.githubusercontent.com/mitre-attack/attack-stix-data/master"
+)
+
+# Maps this module's domain keys to the collection `name` MITRE uses in `index.json`.
+_DOMAIN_COLLECTION_NAME = {
+    "enterprise-attack": "Enterprise ATT&CK",
+    "mobile-attack": "Mobile ATT&CK",
+    "ics-attack": "ICS ATT&CK",
+}
+
+
+def _version_tuple(version: str) -> tuple:
+    parts: list[int] = []
+    for piece in version.split("."):
+        try:
+            parts.append(int(piece))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
+
+
+def _make_github_fetchers(http_client):
+    """Build the `(fetch_index_fn, fetch_bundle_fn)` pair against MITRE's GitHub-hosted
+    `attack-stix-data` repo, adapting its real layout into this module's per-domain
+    contract (`fetch_index_fn(domain) -> {"version": ...}`; `fetch_bundle_fn(domain) ->
+    <parsed bundle dict>`). The single `index.json` (one document covering every domain)
+    is fetched once and cached across the three per-domain index calls.
+    """
+    cache: dict = {}
+
+    def _index() -> dict:
+        if "index" not in cache:
+            resp = http_client.get(f"{_GITHUB_RAW_BASE}/index.json", timeout=60.0)
+            resp.raise_for_status()
+            cache["index"] = resp.json()
+        return cache["index"]
+
+    def fetch_index_fn(domain: str) -> dict:
+        collection_name = _DOMAIN_COLLECTION_NAME.get(domain)
+        for collection in _index().get("collections", []):
+            if collection.get("name") == collection_name:
+                versions = [v.get("version") for v in collection.get("versions", []) if v.get("version")]
+                if versions:
+                    return {"version": max(versions, key=_version_tuple)}
+        # No matching collection/version -> a version string that never equals a stored
+        # one would force a re-sync; instead return an empty sentinel the caller treats as
+        # "unknown" (it will still attempt a bundle fetch and MERGE idempotently).
+        return {"version": ""}
+
+    def fetch_bundle_fn(domain: str) -> dict:
+        resp = http_client.get(f"{_GITHUB_RAW_BASE}/{domain}/{domain}.json", timeout=120.0)
+        resp.raise_for_status()
+        return resp.json()
+
+    return fetch_index_fn, fetch_bundle_fn
+
+
+def handler(
+    event: Any = None,
+    context: Any = None,
+    *,
+    driver=None,
+    fetch_index_fn: _FetchIndexFn | None = None,
+    fetch_bundle_fn: _FetchBundleFn | None = None,
+) -> dict:
+    """Lambda entry point for the daily ATT&CK sync (Category C).
+
+    Reads the per-domain `last_ingested_versions` map from the `PollingState` DynamoDB
+    table (keyed `source_id="mitre_attck"`), runs the version-gated re-sync, and persists
+    the merged versions back so the next run only downloads a domain whose version bumped
+    (FR-DC-26). Seams are injectable for tests; production builds the GitHub fetchers and
+    resolves the shared Neo4j driver.
+    """
+    import os
+
+    import boto3
+
+    close_client = False
+    http_client = None
+    if fetch_index_fn is None or fetch_bundle_fn is None:
+        import httpx
+
+        http_client = httpx.Client(follow_redirects=True)
+        close_client = True
+        default_index_fn, default_bundle_fn = _make_github_fetchers(http_client)
+        fetch_index_fn = fetch_index_fn or default_index_fn
+        fetch_bundle_fn = fetch_bundle_fn or default_bundle_fn
+    if driver is None:
+        from src.common.neo4j_driver import get_driver
+
+        driver = get_driver()
+
+    polling_table = boto3.resource("dynamodb").Table(os.environ["POLLING_STATE_TABLE_NAME"])
+    item = polling_table.get_item(Key={"source_id": _ATTCK_SOURCE_ID}).get("Item", {})
+    last_ingested_versions = dict(item.get("last_ingested_versions", {}))
+
+    try:
+        newly_ingested = sync_attck(
+            driver, fetch_index_fn, fetch_bundle_fn, last_ingested_versions
+        )
+    finally:
+        if close_client and http_client is not None:
+            http_client.close()
+
+    if newly_ingested:
+        last_ingested_versions.update(newly_ingested)
+        polling_table.update_item(
+            Key={"source_id": _ATTCK_SOURCE_ID},
+            UpdateExpression="SET last_ingested_versions = :v",
+            ExpressionAttributeValues={":v": last_ingested_versions},
+        )
+
+    return {"domains_ingested": newly_ingested}

@@ -31,7 +31,7 @@ FR-DC-17, FR-DC-22, FR-DC-23, FR-DC-25, FR-DC-01 (CVE).
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 from src.collection.rest.http_errors import handle_response
@@ -254,6 +254,55 @@ def poll_nvd_delta(driver, http_client: _HttpClient, last_success_at: str) -> in
             if outcome != "absent":
                 updated += 1
     return updated
+
+
+_NVD_SOURCE_ID = "nvd"
+_DEFAULT_LOOKBACK_HOURS = 24
+
+
+def handler(event: dict, context: Any, *, driver=None, http_client: _HttpClient | None = None) -> dict:
+    """Lambda entry point for the scheduled NVD delta poll (Standard/hourly tier).
+
+    Reads `last_success_at` for the NVD source from the `PollingState` DynamoDB table
+    (defaulting to a `_DEFAULT_LOOKBACK_HOURS` window on first run — larger than the
+    hourly cadence, so a missed cycle self-heals rather than skipping CVEs), runs the
+    delta poll, then records the poll outcome so the next run's window starts where this
+    one ended. Seams (`driver`, `http_client`) are injectable for tests; production
+    resolves the shared Neo4j driver and a real `httpx` client.
+    """
+    import os
+
+    import boto3
+
+    from src.collection.rss.dedup_state import record_poll_outcome
+
+    close_client = False
+    if http_client is None:
+        import httpx
+
+        http_client = httpx.Client()
+        close_client = True
+    if driver is None:
+        from src.common.neo4j_driver import get_driver
+
+        driver = get_driver()
+
+    polling_table = boto3.resource("dynamodb").Table(os.environ["POLLING_STATE_TABLE_NAME"])
+    item = polling_table.get_item(Key={"source_id": _NVD_SOURCE_ID}).get("Item", {})
+    last_success_at = item.get("last_success_at") or (
+        datetime.now(timezone.utc) - timedelta(hours=_DEFAULT_LOOKBACK_HOURS)
+    ).isoformat()
+
+    try:
+        updated = poll_nvd_delta(driver, http_client, last_success_at)
+        record_poll_outcome(polling_table, _NVD_SOURCE_ID, success=True)
+        return {"cves_updated": updated}
+    except Exception:
+        record_poll_outcome(polling_table, _NVD_SOURCE_ID, success=False)
+        raise
+    finally:
+        if close_client:
+            http_client.close()
 
 
 def enrich_cve(driver, http_client: _HttpClient, cve_id: str) -> None:
