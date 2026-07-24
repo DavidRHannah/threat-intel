@@ -208,7 +208,7 @@ def extract_deterministic(text: str, article_id: str = "") -> list[RawMention]:
 
     raw_mentions.extend(_extract_ioc_mentions(article_id, text))
 
-    return _dedup_within_type(raw_mentions)
+    return dedup_within_type(raw_mentions)
 
 
 def _normalize_for_dedup(mention: RawMention) -> str:
@@ -219,13 +219,14 @@ def _normalize_for_dedup(mention: RawMention) -> str:
     return mention.surface_text.strip().lower()
 
 
-def _dedup_within_type(mentions: list[RawMention]) -> list[RawMention]:
+def dedup_within_type(mentions: list[RawMention]) -> list[RawMention]:
     """Keep the highest-confidence RawMention per (entity_type, normalized_value).
 
     Generic over the input list — does not assume the entity_type sets from
     different sources are disjoint (FR-EX-11), even though in practice
     deterministic types (cve/ttp/ioc) and LLM types (threat_actor/
-    malware_family) never collide.
+    malware_family) never collide. Public: also used by the Extraction
+    Lambda handler (Step 1.3) to dedup the combined deterministic+LLM set.
     """
     best: dict[tuple[str, str], RawMention] = {}
     for mention in mentions:
