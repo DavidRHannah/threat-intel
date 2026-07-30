@@ -7,14 +7,21 @@ Consumes `StoryCluster` messages (Dedup's output shape, see
 1. Reads the representative article's `cleaned_text`/`content_hash` directly
    from Neo4j (`Article.is_cluster_representative`) -- this is the RE-target
    text/hash (`entity-extraction-nlp-layer/inference-design.md` Part 3).
-2. Checks the RE-cache (`src/nlp/inference/re_cache.py`, Step 4.3) on that
+2. Filters `union_resolved_entities` down to entities that were actually
+   resolved to a real node: a `rejected` mention (FR-RES-07) carries an
+   empty `canonical_node_key` and no node was ever created for it, so it is
+   dropped here before it can ever reach the LLM or a graph write.
+3. Checks the RE-cache (`src/nlp/inference/re_cache.py`, Step 4.3) on that
    hash; a hit skips `extract_relations` entirely (FR-INF-07) and reuses the
    cached `CandidateRelation`s. A miss calls `extract_relations` (Step 4.1)
    and stores the result.
-3. Maps each `CandidateRelation` onto the Layer 2 edge catalog via
+4. Maps each `CandidateRelation` onto the Layer 2 edge catalog via
    `validate_and_map` (Step 4.1); candidates the catalog doesn't sanction
-   (or that are `negated`) come back `None` and are dropped.
-4. Writes each surviving `MappedEdge` via `upsert_inferred_assertion`
+   (or that are `negated`) come back `None` and are dropped. The mapped
+   edge's `assertion_strength` (already hedge-discounted by
+   `validate_and_map`, not the raw `CandidateRelation` value) is what feeds
+   `compute_contribution` (Step 4.2) -- see `confidence.py`'s docstring.
+5. Writes each surviving `MappedEdge` via `upsert_inferred_assertion`
    (`src.common.graph.assertion_edges`, `plans/03-graph.md` Task 3) --
    **always inside `session.execute_write(...)`, never a bare `Session`**:
    `upsert_inferred_assertion`'s locked read (`_existing`) and its write
@@ -22,7 +29,7 @@ Consumes `StoryCluster` messages (Dedup's output shape, see
    lost-update race (9 of 10 concurrent contributions dropped) silently
    returns. This module does not reimplement any of that noisy-OR/
    idempotency math -- it only supplies the endpoint labels/keys and calls in.
-5. Publishes a `graph-writes` SNS notification per write via
+6. Publishes a `graph-writes` SNS notification per write via
    `publish_graph_write` (`src.common.graph.publish`), mirroring the pattern
    established in `src/nlp/resolution/handler.py`.
 
@@ -101,13 +108,25 @@ def _process_story_cluster(
         return  # nothing to infer from without a representative article
     text, content_hash = rep
 
+    # FR-RES-07: a rejected mention (e.g. an unknown TTP id, an unclassifiable IOC)
+    # carries resolution_status="rejected" and an empty canonical_node_key -- no node
+    # was ever created for it. Resolution/Dedup forward these unchanged into
+    # union_resolved_entities. validate_and_map maps purely on entity_type and never
+    # checks the key, so an unfiltered rejected entity that the LLM happens to name
+    # would survive to merge_relationship, which MATCHes (never creates) and raises
+    # EndpointNotFoundError on the empty key -- uncaught, poisoning the whole SQS
+    # batch. Filtered out here, before the entities ever reach the LLM.
+    resolvable_entities = [
+        e
+        for e in story_cluster.union_resolved_entities
+        if e.resolution_status != "rejected" and e.canonical_node_key
+    ]
+
     cached = get_cached_result(re_cache_table, content_hash)
     if cached is not None:
         relations = cached  # FR-INF-07: unchanged RE-target text -> skip the LLM call
     else:
-        relations = extract_relations(
-            text, story_cluster.union_resolved_entities, get_llm_client()
-        )
+        relations = extract_relations(text, resolvable_entities, get_llm_client())
         put_cached_result(re_cache_table, content_hash, relations)
 
     for candidate in relations:
@@ -117,7 +136,7 @@ def _process_story_cluster(
 
         start_key = _entity_key(mapped.start_label, mapped.start_key)
         end_key = _entity_key(mapped.end_label, mapped.end_key)
-        contribution = compute_contribution(candidate)
+        contribution = compute_contribution(mapped)
 
         with driver.session() as session:
             session.execute_write(

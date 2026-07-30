@@ -160,6 +160,88 @@ def test_actor_and_cve_costory_creates_exploited_by_edge_with_inferred_origin(
 
 
 @patch("src.nlp.inference.handler.publish_graph_write")
+def test_hedged_assertion_writes_discounted_inferred_confidence(mock_publish, driver, re_cache_table):
+    # FR-INF-03/06 (review round 1): a hedged candidate's assertion_strength must be
+    # discounted (relation_extraction._HEDGE_DISCOUNT = 0.5) BEFORE it reaches
+    # inferred_confidence -- not written at the LLM's raw, undiscounted strength.
+    cve_id = "CVE-2099-60006"
+    actor_key = "apt-handler-hedge-test"
+    _seed_node(driver, "CVE", "cve_id", cve_id)
+    _seed_node(driver, "ThreatActor", "merge_key", actor_key)
+
+    article_id = f"{_TEST_PREFIX}::article-hedge"
+    cluster_id = f"{_TEST_PREFIX}::cluster-hedge"
+    _seed_article(driver, article_id, cluster_id, "APT is suspected to exploit the CVE.", "hash-hedge")
+
+    entities = [
+        ResolvedEntity(cve_id, "cve", "resolved", 1.0),
+        ResolvedEntity(actor_key, "threat_actor", "resolved", 0.9),
+    ]
+    story_cluster = StoryCluster(
+        story_cluster_id=cluster_id, article_ids=[article_id], union_resolved_entities=entities
+    )
+
+    candidate = CandidateRelation(
+        entity_a={"canonical_node_key": actor_key, "entity_type": "threat_actor"},
+        entity_b={"canonical_node_key": cve_id, "entity_type": "cve"},
+        relationship="exploits",
+        direction="b_to_a",
+        assertion_strength=0.9,
+        polarity="hedged",
+    )
+
+    with patch("src.nlp.inference.handler.extract_relations", return_value=[candidate]):
+        _process_story_cluster(story_cluster.to_dict(), driver, re_cache_table, _unused_llm_client)
+
+    with driver.session() as s:
+        record = s.run(
+            "MATCH (:CVE {cve_id: $cve_id})-[r:EXPLOITED_BY]->(:ThreatActor {merge_key: $actor_key}) "
+            "RETURN r.inferred_confidence AS inferred_confidence",
+            cve_id=cve_id,
+            actor_key=actor_key,
+        ).single()
+    assert record["inferred_confidence"] == pytest.approx(0.45)  # 0.9 * 0.5 hedge discount
+
+
+@patch("src.nlp.inference.handler.publish_graph_write")
+def test_rejected_entity_in_union_does_not_reach_llm_or_blow_up_handler(
+    mock_publish, driver, re_cache_table
+):
+    # Important (review round 1): a rejected mention (FR-RES-07) has an empty
+    # canonical_node_key and no backing node. Forwarding it into extract_relations
+    # risks the LLM naming it, validate_and_map mapping it purely on entity_type (it
+    # doesn't check the key), and merge_relationship raising EndpointNotFoundError on
+    # the empty key -- uncaught, poisoning the whole SQS batch. Must be filtered out
+    # before the LLM ever sees it.
+    cve_id = "CVE-2099-70007"
+    _seed_node(driver, "CVE", "cve_id", cve_id)
+
+    article_id = f"{_TEST_PREFIX}::article-rejected"
+    cluster_id = f"{_TEST_PREFIX}::cluster-rejected"
+    _seed_article(driver, article_id, cluster_id, "The CVE was mentioned near an unknown TTP.", "hash-rejected")
+
+    entities = [
+        ResolvedEntity(cve_id, "cve", "resolved", 1.0),
+        ResolvedEntity("", "ttp", "rejected", 0.0),  # rejected: no node, empty key
+    ]
+    story_cluster = StoryCluster(
+        story_cluster_id=cluster_id, article_ids=[article_id], union_resolved_entities=entities
+    )
+
+    with patch(
+        "src.nlp.inference.handler.extract_relations", return_value=[]
+    ) as mock_extract:
+        _process_story_cluster(story_cluster.to_dict(), driver, re_cache_table, _unused_llm_client)
+
+    # The rejected entity must never have been forwarded to extract_relations.
+    call_entities = mock_extract.call_args.args[1]
+    forwarded_keys = {e.canonical_node_key for e in call_entities}
+    assert "" not in forwarded_keys
+    assert all(e.resolution_status != "rejected" for e in call_entities)
+    assert cve_id in forwarded_keys
+
+
+@patch("src.nlp.inference.handler.publish_graph_write")
 def test_re_cache_hit_skips_extract_relations(mock_publish, driver, re_cache_table):
     # FR-INF-07: unchanged RE-target text (same content_hash) -> cache hit -> no LLM call.
     cve_id = "CVE-2099-50005"
