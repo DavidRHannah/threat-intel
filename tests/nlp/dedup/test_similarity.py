@@ -358,7 +358,26 @@ def test_parse_timestamp_naive_iso_string_becomes_timezone_aware():
 
 
 def test_parse_timestamp_none_sorts_before_any_real_timestamp():
+    """`_parse_timestamp`'s raw sentinel IS `datetime.min`, so a naive
+    `min()`/sort by its return value puts a date-less article first -- this
+    is the raw-function behavior `chronological_sort_key` exists to correct
+    for ordering callers (see the test below and that function's docstring)."""
     from src.nlp.dedup.similarity import _parse_timestamp
 
     now = datetime.now(timezone.utc)
     assert _parse_timestamp(None) < _parse_timestamp(now.isoformat())
+
+
+def test_chronological_sort_key_sorts_dateless_last():
+    """The inverse of the raw-sentinel behavior above: FR-DED-04 (earliest
+    published_at wins representative election) and FR-DED-06 (oldest-cluster
+    tie-break) both need a date-less article to lose an "earliest wins"
+    comparison, not win it by sentinel accident."""
+    from src.nlp.dedup.similarity import chronological_sort_key
+
+    now = datetime.now(timezone.utc)
+    ordering = sorted(
+        [None, now.isoformat()],
+        key=chronological_sort_key,
+    )
+    assert ordering == [now.isoformat(), None]

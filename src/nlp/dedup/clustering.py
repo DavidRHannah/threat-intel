@@ -34,7 +34,12 @@ import uuid
 from neo4j import Driver, ManagedTransaction
 
 from src.common.config import get_config
-from src.nlp.dedup.similarity import ArticleFingerprint, _parse_timestamp, find_candidates, score
+from src.nlp.dedup.similarity import (
+    ArticleFingerprint,
+    chronological_sort_key,
+    find_candidates,
+    score,
+)
 from src.nlp.messages import ResolvedArticle, ResolvedEntity
 
 # Neo4j label -> the natural-key property Resolution (src/nlp/resolution/deterministic.py
@@ -186,7 +191,7 @@ def _assign_cluster_tx(tx: ManagedTransaction, self_id: str, matched_ids: list[s
         # cluster whose own (pre-bridge) members published earliest.
         def _oldest_member_time(cluster_id: str):
             return min(
-                _parse_timestamp(m["published_at"])
+                chronological_sort_key(m["published_at"])
                 for m in members
                 if m["cluster_id"] == cluster_id
             )
@@ -199,7 +204,7 @@ def _assign_cluster_tx(tx: ManagedTransaction, self_id: str, matched_ids: list[s
     def _representative_key(m: dict):
         credibility = m["credibility"]
         credibility_rank = credibility if credibility is not None else float("-inf")
-        return (_parse_timestamp(m["published_at"]), -credibility_rank)
+        return (chronological_sort_key(m["published_at"]), -credibility_rank)
 
     representative = min(members, key=_representative_key)
 

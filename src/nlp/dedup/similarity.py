@@ -82,10 +82,18 @@ def _parse_timestamp(value: str | None) -> datetime:
     date yields `None` -- see `src/collection/rss/poller.py`'s `_entry_field`
     and `src/collection/rss/extraction.py`, which writes `None` straight
     through). `None`/empty-string/unparseable input returns a defined
-    sentinel (`datetime.min`, UTC) rather than raising -- this sorts a
-    date-less article last for representative election (FR-DED-04) and scores
-    its time-proximity component as 0 (FR-DED-02) instead of crashing inside
-    a write transaction (`src/nlp/dedup/clustering.py`).
+    sentinel (`datetime.min`, UTC) rather than raising, so `_time_proximity`
+    (FR-DED-02) can still take an `abs()` delta against it -- a date-less
+    article ends up maximally distant from any real-dated one either way,
+    scoring 0 -- instead of crashing inside a write transaction
+    (`src/nlp/dedup/clustering.py`).
+
+    **This sentinel is a minimum, so raw `min()`/sort ordering by this
+    function's return value is backwards for "earliest wins" comparisons**
+    (FR-DED-04 representative election, FR-DED-06 oldest-cluster tie-break) --
+    it would make a date-less article always win. Callers doing that kind of
+    ordering must use `chronological_sort_key` below instead, not this
+    function directly.
 
     Every return path is normalized to timezone-aware: a naive
     `datetime.fromisoformat` result (e.g. `"2026-01-01T00:00:00"`, no offset)
@@ -105,6 +113,22 @@ def _parse_timestamp(value: str | None) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def chronological_sort_key(value: str | None) -> tuple[bool, datetime]:
+    """`_parse_timestamp`'s sentinel (`datetime.min`) is a valid absolute
+    timestamp for arithmetic (`_time_proximity`'s `abs(delta)` treats a
+    date-less article as maximally distant from anything, correctly scoring
+    0 regardless of sentinel direction), but it is NOT safe to `min()`/sort
+    articles by directly: `datetime.min` sorts *first*, which would make a
+    date-less article always win an "earliest published_at" comparison --
+    the opposite of FR-DED-04's intent (representative election) and
+    FR-DED-06's (oldest-cluster tie-break). Callers doing ordering (not
+    distance) must use this instead of `_parse_timestamp` directly: the
+    leading `bool` sorts real timestamps (`False`) before date-less ones
+    (`True`), so `min()` always prefers a real date over the sentinel."""
+    parsed = _parse_timestamp(value)
+    return (parsed == _MIN_TIMESTAMP, parsed)
 
 
 def find_candidates(driver: Driver, article: ResolvedArticle, window_hours: int) -> list[str]:

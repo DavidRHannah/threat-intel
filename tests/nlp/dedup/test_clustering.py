@@ -385,6 +385,11 @@ def test_cluster_with_a_dateless_member_still_computes_representative(driver):
     # zero or multiple representatives).
     reps = [state_dated["is_cluster_representative"], state_dateless["is_cluster_representative"]]
     assert reps.count(True) == 1
+    # FR-DED-04 ("earliest published_at" election) must not be inverted by the
+    # sentinel: the dated member wins, never the date-less one (regression guard
+    # for the scoped-re-review finding on `chronological_sort_key`).
+    assert state_dated["is_cluster_representative"] is True
+    assert state_dateless["is_cluster_representative"] is False
     assert state_dated["dedup_cluster_size"] == 2 or state_dateless["dedup_cluster_size"] == 2
 
 
