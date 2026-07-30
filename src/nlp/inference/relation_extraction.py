@@ -123,6 +123,27 @@ class CandidateRelation:
     assertion_strength: float
     polarity: str
 
+    def to_dict(self) -> dict:
+        return {
+            "entity_a": dict(self.entity_a),
+            "entity_b": dict(self.entity_b),
+            "relationship": self.relationship,
+            "direction": self.direction,
+            "assertion_strength": self.assertion_strength,
+            "polarity": self.polarity,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CandidateRelation":
+        return cls(
+            entity_a=dict(data["entity_a"]),
+            entity_b=dict(data["entity_b"]),
+            relationship=data["relationship"],
+            direction=data["direction"],
+            assertion_strength=data["assertion_strength"],
+            polarity=data["polarity"],
+        )
+
 
 @dataclass
 class MappedEdge:
