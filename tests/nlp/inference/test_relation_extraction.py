@@ -132,6 +132,8 @@ def test_asserted_cve_actor_maps_to_exploited_by_cve_rooted():
     assert mapped.start_key == "cve:cve-2026-1234"
     assert mapped.end_key == "threat_actor:apt28"
     assert mapped.assertion_strength == 0.9
+    assert mapped.start_label == "CVE"
+    assert mapped.end_label == "ThreatActor"
 
 
 def test_uses_is_consumer_rooted():
@@ -150,6 +152,8 @@ def test_uses_is_consumer_rooted():
     assert mapped.edge_type == "USES"
     assert mapped.start_key == "threat_actor:apt28"
     assert mapped.end_key == "ttp:t1566"
+    assert mapped.start_label == "ThreatActor"
+    assert mapped.end_label == "TTP"
 
 
 def test_malware_family_to_ioc_sample_keyword_maps_to_has_sample():
@@ -170,6 +174,8 @@ def test_malware_family_to_ioc_sample_keyword_maps_to_has_sample():
     assert mapped.edge_type == "HAS_SAMPLE"
     assert mapped.start_key == "malware_family:emotet"
     assert mapped.end_key == "ioc:deadbeef"
+    assert mapped.start_label == "MalwareFamily"
+    assert mapped.end_label == "IOC"
 
 
 def test_malware_family_to_ioc_c2_keyword_maps_to_communicates_with():
@@ -188,6 +194,8 @@ def test_malware_family_to_ioc_c2_keyword_maps_to_communicates_with():
     assert mapped.edge_type == "COMMUNICATES_WITH"
     assert mapped.start_key == "malware_family:emotet"
     assert mapped.end_key == "ioc:1.2.3.4"
+    assert mapped.start_label == "MalwareFamily"
+    assert mapped.end_label == "IOC"
 
 
 def test_malware_family_to_ioc_with_no_disambiguating_keyword_is_dropped():

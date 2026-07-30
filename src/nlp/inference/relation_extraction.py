@@ -153,6 +153,8 @@ class MappedEdge:
     start_key: str
     end_key: str
     assertion_strength: float
+    start_label: str
+    end_label: str
 
 
 def extract_relations(
@@ -269,6 +271,19 @@ _CATALOG = [
     },
 ]
 
+# Neo4j node labels for each Layer 2 entity type (technical-specification.md §3.1),
+# used to populate MappedEdge.start_label/end_label -- mirrors
+# src/nlp/resolution/handler.py's _DETERMINISTIC_LABEL_BY_TYPE, extended to the fuzzy
+# and inference-only types that can appear at an inferred edge's endpoints.
+_NODE_LABEL_BY_TYPE = {
+    "cve": "CVE",
+    "ttp": "TTP",
+    "ioc": "IOC",
+    "threat_actor": "ThreatActor",
+    "malware_family": "MalwareFamily",
+    "campaign": "Campaign",
+}
+
 # Disambiguation keywords for type pairs the catalog maps to more than one edge
 # (MalwareFamily->IOC is both HAS_SAMPLE and COMMUNICATES_WITH). Matched against
 # the LLM's free-text `relationship` label, case-insensitively.
@@ -325,7 +340,7 @@ def validate_and_map(candidate: CandidateRelation) -> MappedEdge | None:
             return None  # cannot unambiguously disambiguate; drop rather than guess
         matches = resolved
 
-    entry, resolved_start_type, _resolved_end_type = matches[0]
+    entry, resolved_start_type, resolved_end_type = matches[0]
     start_key = key_a if type_a == resolved_start_type else key_b
     end_key = key_b if start_key == key_a else key_a
 
@@ -338,4 +353,6 @@ def validate_and_map(candidate: CandidateRelation) -> MappedEdge | None:
         start_key=start_key,
         end_key=end_key,
         assertion_strength=strength,
+        start_label=_NODE_LABEL_BY_TYPE[resolved_start_type],
+        end_label=_NODE_LABEL_BY_TYPE[resolved_end_type],
     )
