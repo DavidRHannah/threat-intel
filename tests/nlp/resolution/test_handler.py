@@ -147,6 +147,8 @@ def test_update_event_retracts_dropped_deterministic_mention_not_fuzzy(mock_publ
 def test_resolved_article_published_to_resolved_articles_queue(mock_publish, driver):
     message = {
         "article_id": ARTICLE_ID,
+        "title": "Some Article Title",
+        "published_at": "2026-01-01T00:00:00Z",
         "mentions": [_mention("cve", "CVE-2099-30003")],
     }
     sqs_client = MagicMock()
@@ -161,6 +163,10 @@ def test_resolved_article_published_to_resolved_articles_queue(mock_publish, dri
     assert body["article_id"] == ARTICLE_ID
     assert body["source_id"] == "resolution-handler-test"
     assert body["resolved_entities"][0]["canonical_node_key"] == "CVE-2099-30003"
+    # C1: title/published_at are read straight from the incoming message (the raw-mentions
+    # SQS body Extraction now sends), never defaulted to empty string.
+    assert body["title"] == "Some Article Title"
+    assert body["published_at"] == "2026-01-01T00:00:00Z"
 
 
 @patch("src.nlp.resolution.handler.publish_graph_write")

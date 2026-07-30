@@ -32,6 +32,7 @@ def _process_article(message: dict[str, Any], sqs_client: Any) -> None:
     article_id = message["article_id"]
     cleaned_text = message.get("cleaned_text") or ""
     title = message.get("title") or ""
+    published_at = message.get("published_at") or ""
 
     deterministic_mentions = extract_deterministic(cleaned_text, article_id=article_id)
 
@@ -69,6 +70,8 @@ def _process_article(message: dict[str, Any], sqs_client: Any) -> None:
         MessageBody=json.dumps(
             {
                 "article_id": article_id,
+                "title": title,
+                "published_at": published_at,
                 "mentions": [m.to_dict() for m in all_mentions],
             }
         ),

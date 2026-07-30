@@ -121,6 +121,7 @@ def _process_story_cluster(
         for e in story_cluster.union_resolved_entities
         if e.resolution_status != "rejected" and e.canonical_node_key
     ]
+    resolvable_keys = {e.canonical_node_key for e in resolvable_entities}
 
     cached = get_cached_result(re_cache_table, content_hash)
     if cached is not None:
@@ -128,6 +129,22 @@ def _process_story_cluster(
     else:
         relations = extract_relations(text, resolvable_entities, get_llm_client())
         put_cached_result(re_cache_table, content_hash, relations)
+
+    # I3 (review round 2): a cache HIT replays CandidateRelations proposed by a
+    # PREVIOUS run against that run's resolvable_entities -- not necessarily this
+    # cluster's *current* resolvable set (a mention's resolution can change between
+    # cache-write and cache-read, e.g. an entity resolvable then, rejected/removed
+    # since). Filtering only the entities passed INTO extract_relations (as the
+    # cache-miss path already did) leaves the cache-HIT path unguarded: an unresolvable
+    # candidate reaches merge_relationship and raises EndpointNotFoundError uncaught,
+    # poisoning the whole SQS batch. Applied uniformly to BOTH paths here, against the
+    # relations actually about to be written, not just the entities offered to the LLM.
+    relations = [
+        r
+        for r in relations
+        if r.entity_a.get("canonical_node_key") in resolvable_keys
+        and r.entity_b.get("canonical_node_key") in resolvable_keys
+    ]
 
     for candidate in relations:
         mapped = validate_and_map(candidate)

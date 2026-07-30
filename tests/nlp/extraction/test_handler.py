@@ -63,6 +63,10 @@ def test_article_event_emits_both_deterministic_and_fuzzy_mentions(mock_extract_
     entity_types = {m["entity_type"] for m in body["mentions"]}
     assert "cve" in entity_types
     assert "threat_actor" in entity_types
+    # C1: title/published_at must be carried through to the raw-mentions SQS body --
+    # Resolution reads them straight from this message, no default placeholder.
+    assert body["title"] == ARTICLE_MESSAGE["title"]
+    assert body["published_at"] == ARTICLE_MESSAGE["published_at"]
 
 
 @patch("src.nlp.extraction.handler.boto3")

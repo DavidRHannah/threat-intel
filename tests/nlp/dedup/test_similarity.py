@@ -321,3 +321,44 @@ def test_time_proximity_beyond_window_is_0():
     now = datetime.now(timezone.utc)
     later = now + timedelta(hours=1000)
     assert _time_proximity(now.isoformat(), later.isoformat(), window_hours=72) == 0.0
+
+
+# C2: _parse_timestamp must never raise on a nullable/missing published_at
+# (production reality -- src/collection/rss/poller.py's _entry_field/
+# extraction.py write None straight through for a feed entry with no date).
+def test_parse_timestamp_none_returns_sentinel_without_raising():
+    from src.nlp.dedup.similarity import _MIN_TIMESTAMP, _parse_timestamp
+
+    assert _parse_timestamp(None) == _MIN_TIMESTAMP
+
+
+def test_parse_timestamp_empty_string_returns_sentinel_without_raising():
+    from src.nlp.dedup.similarity import _MIN_TIMESTAMP, _parse_timestamp
+
+    assert _parse_timestamp("") == _MIN_TIMESTAMP
+
+
+def test_parse_timestamp_unparseable_string_returns_sentinel_without_raising():
+    from src.nlp.dedup.similarity import _MIN_TIMESTAMP, _parse_timestamp
+
+    assert _parse_timestamp("not-a-real-timestamp") == _MIN_TIMESTAMP
+
+
+def test_parse_timestamp_sentinel_is_timezone_aware():
+    from src.nlp.dedup.similarity import _parse_timestamp
+
+    assert _parse_timestamp(None).tzinfo is not None
+
+
+def test_parse_timestamp_naive_iso_string_becomes_timezone_aware():
+    from src.nlp.dedup.similarity import _parse_timestamp
+
+    parsed = _parse_timestamp("2026-01-01T00:00:00")
+    assert parsed.tzinfo is not None
+
+
+def test_parse_timestamp_none_sorts_before_any_real_timestamp():
+    from src.nlp.dedup.similarity import _parse_timestamp
+
+    now = datetime.now(timezone.utc)
+    assert _parse_timestamp(None) < _parse_timestamp(now.isoformat())

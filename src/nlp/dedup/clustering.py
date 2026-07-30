@@ -37,10 +37,28 @@ from src.common.config import get_config
 from src.nlp.dedup.similarity import ArticleFingerprint, _parse_timestamp, find_candidates, score
 from src.nlp.messages import ResolvedArticle, ResolvedEntity
 
-# Neo4j label -> the natural-key property Resolution (src/nlp/resolution/deterministic.py)
-# writes on that entity type's node -- mirrors similarity.py's _ENTITY_LABEL_KEY, reversed.
-_LABEL_TO_ENTITY_TYPE: dict[str, str] = {"CVE": "cve", "TTP": "ttp", "IOC": "ioc"}
-_LABEL_KEY_PROP: dict[str, str] = {"CVE": "cve_id", "TTP": "technique_id", "IOC": "value_type_key"}
+# Neo4j label -> the natural-key property Resolution (src/nlp/resolution/deterministic.py
+# for CVE/TTP/IOC, src/nlp/resolution/fuzzy.py for ThreatActor/MalwareFamily) writes on that
+# entity type's node -- mirrors similarity.py's _ENTITY_LABEL_KEY, reversed, and extended with
+# the fuzzy-resolved labels (I1, review round 2): the self/incoming-article fingerprint
+# includes threat_actor/malware_family entries via `article.resolved_entities` (see
+# `_load_fingerprint`'s `resolved_entities` param), so the candidate-fingerprint rebuild below
+# must include them too, symmetric with the self side, or `_entity_jaccard` in similarity.py
+# systematically undercounts every candidate's actor/malware overlap.
+_LABEL_TO_ENTITY_TYPE: dict[str, str] = {
+    "CVE": "cve",
+    "TTP": "ttp",
+    "IOC": "ioc",
+    "ThreatActor": "threat_actor",
+    "MalwareFamily": "malware_family",
+}
+_LABEL_KEY_PROP: dict[str, str] = {
+    "CVE": "cve_id",
+    "TTP": "technique_id",
+    "IOC": "value_type_key",
+    "ThreatActor": "merge_key",
+    "MalwareFamily": "merge_key",
+}
 
 
 def _load_fingerprint(
@@ -67,7 +85,8 @@ def _load_fingerprint(
         rows = session.run(
             "MATCH (:Article {source_guid_key: $id})-[:MENTIONS]->(e) "
             "RETURN labels(e) AS labels, e.cve_id AS cve_id, "
-            "e.technique_id AS technique_id, e.value_type_key AS value_type_key",
+            "e.technique_id AS technique_id, e.value_type_key AS value_type_key, "
+            "e.merge_key AS merge_key",
             id=article_id,
         )
         for row in rows:

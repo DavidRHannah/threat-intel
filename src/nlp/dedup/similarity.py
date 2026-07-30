@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
 from neo4j import Driver
@@ -69,15 +69,42 @@ class ArticleFingerprint:
     resolved_entities: list[ResolvedEntity]
 
 
-def _parse_timestamp(value: str) -> datetime:
+_MIN_TIMESTAMP = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _parse_timestamp(value: str | None) -> datetime:
     """Article `published_at` values may be ISO 8601 (produced by this
     codebase, e.g. `fetched_at`) or an RFC 822 string straight from
     `feedparser`'s raw `published` field (see `src/collection/rss/poller.py`).
-    Try both rather than assuming one."""
+    Try both rather than assuming one.
+
+    `published_at` is nullable in production (a feed entry with no publication
+    date yields `None` -- see `src/collection/rss/poller.py`'s `_entry_field`
+    and `src/collection/rss/extraction.py`, which writes `None` straight
+    through). `None`/empty-string/unparseable input returns a defined
+    sentinel (`datetime.min`, UTC) rather than raising -- this sorts a
+    date-less article last for representative election (FR-DED-04) and scores
+    its time-proximity component as 0 (FR-DED-02) instead of crashing inside
+    a write transaction (`src/nlp/dedup/clustering.py`).
+
+    Every return path is normalized to timezone-aware: a naive
+    `datetime.fromisoformat` result (e.g. `"2026-01-01T00:00:00"`, no offset)
+    is stamped UTC so it never gets compared/subtracted against an aware
+    value from another parse path."""
+    if not value:
+        return _MIN_TIMESTAMP
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)
     except ValueError:
-        return parsedate_to_datetime(value)
+        try:
+            parsed = parsedate_to_datetime(value)
+        except (ValueError, TypeError):
+            return _MIN_TIMESTAMP
+    if parsed is None:
+        return _MIN_TIMESTAMP
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def find_candidates(driver: Driver, article: ResolvedArticle, window_hours: int) -> list[str]:

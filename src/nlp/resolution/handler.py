@@ -11,12 +11,13 @@ additive-only -- FR-RES-11), and publishes the resulting `ResolvedArticle` to
 the `resolved-articles` SQS queue plus a `graph-writes` SNS notification per
 resolved mention.
 
-Known gap (not this stage's to fix): the raw-mentions message carries only
-`article_id` + `mentions` -- no `title`/`published_at`. `source_id` is
-recoverable via `article_ref_from_id` (article_id IS the synthetic
-`source_guid_key`), but `title`/`published_at` are not carried through the
-pipeline past Extraction, so `ResolvedArticle` is emitted with empty-string
-placeholders for those two fields here.
+The raw-mentions message carries `article_id`, `title`, `published_at` (both
+threaded through by `src/nlp/extraction/handler.py` from the L1 `graph-writes`
+SNS message it consumed) plus `mentions`. `source_id` is recoverable via
+`article_ref_from_id` (article_id IS the synthetic `source_guid_key`).
+`title`/`published_at` are read straight off the incoming message -- a
+missing key falls back to `""` only for defensive robustness (e.g. a
+malformed/older message), not because Extraction is expected to omit them.
 """
 
 from __future__ import annotations

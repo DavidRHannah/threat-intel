@@ -286,6 +286,78 @@ def test_re_cache_hit_skips_extract_relations(mock_publish, driver, re_cache_tab
 
 
 @patch("src.nlp.inference.handler.publish_graph_write")
+def test_re_cache_hit_with_now_unresolvable_entity_does_not_raise_and_skips_that_candidate(
+    mock_publish, driver, re_cache_table
+):
+    # I3 (review round 2): a cache HIT replays CandidateRelations from a PREVIOUS run,
+    # which may reference an entity that was resolvable then but is not in THIS
+    # cluster's current resolvable_entities set. Unfiltered, merge_relationship raises
+    # EndpointNotFoundError (uncaught) on the stale/unresolvable endpoint, poisoning the
+    # whole SQS batch. Must not raise; must skip only the offending candidate, still
+    # writing any other valid candidate in the same cache hit.
+    cve_id = "CVE-2099-80008"
+    actor_key = "apt-handler-i3-test"
+    stale_actor_key = "apt-handler-i3-stale-no-longer-resolvable"
+    _seed_node(driver, "CVE", "cve_id", cve_id)
+    _seed_node(driver, "ThreatActor", "merge_key", actor_key)
+    # Deliberately NOT seeding stale_actor_key's node -- it is not in this cluster's
+    # current resolvable_entities, simulating an entity that became unresolvable since
+    # the cache entry was written.
+
+    article_id = f"{_TEST_PREFIX}::article-i3"
+    cluster_id = f"{_TEST_PREFIX}::cluster-i3"
+    content_hash = "hash-i3-stale-cache"
+    _seed_article(driver, article_id, cluster_id, "APT was seen exploiting the CVE.", content_hash)
+
+    # Current cluster's resolvable entities do NOT include stale_actor_key.
+    entities = [
+        ResolvedEntity(cve_id, "cve", "resolved", 1.0),
+        ResolvedEntity(actor_key, "threat_actor", "resolved", 0.9),
+    ]
+    story_cluster = StoryCluster(
+        story_cluster_id=cluster_id, article_ids=[article_id], union_resolved_entities=entities
+    )
+
+    valid_candidate = CandidateRelation(
+        entity_a={"canonical_node_key": actor_key, "entity_type": "threat_actor"},
+        entity_b={"canonical_node_key": cve_id, "entity_type": "cve"},
+        relationship="exploits",
+        direction="b_to_a",
+        assertion_strength=0.9,
+        polarity="asserted",
+    )
+    stale_candidate = CandidateRelation(
+        entity_a={"canonical_node_key": stale_actor_key, "entity_type": "threat_actor"},
+        entity_b={"canonical_node_key": cve_id, "entity_type": "cve"},
+        relationship="exploits",
+        direction="b_to_a",
+        assertion_strength=0.9,
+        polarity="asserted",
+    )
+    from src.nlp.inference.re_cache import put_cached_result
+
+    put_cached_result(re_cache_table, content_hash, [stale_candidate, valid_candidate])
+
+    with patch("src.nlp.inference.handler.extract_relations") as mock_extract:
+        _process_story_cluster(  # must not raise
+            story_cluster.to_dict(), driver, re_cache_table, _no_llm_needed
+        )
+        mock_extract.assert_not_called()
+
+    # The valid candidate (both endpoints in the current resolvable set) was written.
+    assert _edge_exists(
+        driver, "CVE", "cve_id", cve_id, "EXPLOITED_BY", "ThreatActor", "merge_key", actor_key
+    )
+    # The stale candidate referencing an unresolvable entity produced no edge of any kind.
+    with driver.session() as s:
+        stale_edge = s.run(
+            "MATCH (:ThreatActor {merge_key: $key})-[r]-() RETURN r",
+            key=stale_actor_key,
+        ).single()
+    assert stale_edge is None
+
+
+@patch("src.nlp.inference.handler.publish_graph_write")
 def test_entities_only_co_occurring_across_separate_clusters_get_no_edge(
     mock_publish, driver, re_cache_table
 ):

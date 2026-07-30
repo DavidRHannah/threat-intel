@@ -326,3 +326,114 @@ def test_bridging_article_merges_clusters_under_older_id(driver):
 
     rep_state = _get_article_state(driver, key_a1)
     assert rep_state["dedup_cluster_size"] == 5
+
+
+# C2: a date-less member (published_at is None -- a nullable production field, see
+# src/collection/rss/poller.py's _entry_field) must not poison the cluster-assignment
+# write transaction; _parse_timestamp's None sentinel lets a representative still be
+# computed. Exercises `_assign_cluster_tx` directly (rather than the public
+# `assign_cluster` entry point): `find_candidates`' time-window blocking is a hard
+# cutoff, not a score, so a self-article with no date can never fall inside any
+# window and would never reach this code path via the public API in the first
+# place -- this test is about the representative-election math inside the locked
+# write, which any member of an already-joined cluster (dateless or not) reaches.
+def test_cluster_with_a_dateless_member_still_computes_representative(driver):
+    from src.nlp.dedup.clustering import _assign_cluster_tx
+
+    cve = "CVE-2099-10005"
+    content_hash = "identical-hash-c2-dateless"
+    key_dated = "dedup-clu-source::c2-dated"
+    key_dateless = "dedup-clu-source::c2-dateless"
+
+    _make_article(
+        driver,
+        key=key_dated,
+        published_at=_iso(BASE_TIME),
+        content_hash=content_hash,
+        cve_id=cve,
+    )
+    cluster_id = assign_cluster(driver, _resolved_article(key_dated, _iso(BASE_TIME), cve_id=cve))
+
+    # published_at is None on this member -- simulates a feed entry with no date.
+    with driver.session() as s:
+        s.run(
+            "MERGE (a:Article {source_guid_key: $key}) "
+            "SET a.test_fixture = true, a.published_at = null, "
+            "a.content_hash = $content_hash, a.cleaned_text = '', a.dedup_cluster_size = 1",
+            key=key_dateless,
+            content_hash=content_hash,
+        ).consume()
+        s.run(
+            "MATCH (a:Article {source_guid_key: $key}), (c:CVE {cve_id: $cve_id}) "
+            "MERGE (a)-[:MENTIONS]->(c)",
+            key=key_dateless,
+            cve_id=cve,
+        ).consume()
+
+    with driver.session() as s:
+        final_id = s.execute_write(  # must not raise
+            _assign_cluster_tx, key_dateless, [key_dated], "unused-new-cluster-id"
+        )
+
+    assert final_id == cluster_id
+    state_dated = _get_article_state(driver, key_dated)
+    state_dateless = _get_article_state(driver, key_dateless)
+    assert state_dated["story_cluster_id"] == cluster_id
+    assert state_dateless["story_cluster_id"] == cluster_id
+    # The core C2 guarantee: exactly one representative is still elected for the
+    # 2-member cluster (the write did not raise and did not leave the cluster with
+    # zero or multiple representatives).
+    reps = [state_dated["is_cluster_representative"], state_dateless["is_cluster_representative"]]
+    assert reps.count(True) == 1
+    assert state_dated["dedup_cluster_size"] == 2 or state_dateless["dedup_cluster_size"] == 2
+
+
+# I1 (review round 2): the candidate-fingerprint rebuild in `_load_fingerprint` must
+# include ThreatActor/MalwareFamily MENTIONS, symmetric with the self-article side
+# (which carries them via `article.resolved_entities`) -- otherwise two articles
+# sharing only an actor (no CVE/TTP/IOC) score a false 0.0 entity overlap for any
+# candidate, because the candidate side of the comparison always came back empty.
+def test_load_fingerprint_rebuild_includes_actor_and_malware_mentions(driver):
+    from src.nlp.dedup.clustering import _load_fingerprint
+
+    key = "dedup-clu-source::i1-candidate"
+    actor_key = "i1-actor"
+    malware_key = "i1-malware"
+    with driver.session() as s:
+        s.run(
+            "MERGE (a:Article {source_guid_key: $key}) SET a.test_fixture = true, "
+            "a.published_at = $published_at, a.content_hash = '', a.cleaned_text = ''",
+            key=key,
+            published_at=_iso(BASE_TIME),
+        ).consume()
+        s.run(
+            "MERGE (t:ThreatActor {merge_key: $actor_key}) SET t.test_fixture = true "
+            "WITH t MATCH (a:Article {source_guid_key: $key}) MERGE (a)-[:MENTIONS]->(t)",
+            actor_key=actor_key,
+            key=key,
+        ).consume()
+        s.run(
+            "MERGE (m:MalwareFamily {merge_key: $malware_key}) SET m.test_fixture = true "
+            "WITH m MATCH (a:Article {source_guid_key: $key}) MERGE (a)-[:MENTIONS]->(m)",
+            malware_key=malware_key,
+            key=key,
+        ).consume()
+
+    with driver.session() as s:
+        fingerprint = _load_fingerprint(s, key)
+
+    entity_keys = {e.canonical_node_key for e in fingerprint.resolved_entities}
+    entity_types = {e.entity_type for e in fingerprint.resolved_entities}
+    assert actor_key in entity_keys
+    assert malware_key in entity_keys
+    assert "threat_actor" in entity_types
+    assert "malware_family" in entity_types
+
+
+def test_entity_jaccard_symmetric_for_shared_actor_with_no_cve_ttp_ioc():
+    from src.nlp.dedup.similarity import _entity_jaccard
+
+    self_entities = [ResolvedEntity("shared-actor", "threat_actor", "resolved", 0.9)]
+    candidate_entities = [ResolvedEntity("shared-actor", "threat_actor", "resolved", 0.9)]
+
+    assert _entity_jaccard(self_entities, candidate_entities) == 1.0
