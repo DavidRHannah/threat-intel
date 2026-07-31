@@ -1,6 +1,6 @@
 # Crossroads
 
-An open-source threat-intelligence platform, built as a Feedly Threat Intelligence clone.
+An open-source threat-intelligence platform.
 
 Crossroads ingests security feeds and turns them into a queryable, scored threat graph:
 
