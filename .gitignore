@@ -7,3 +7,6 @@ cdk.out/
 .pytest_cache/
 .ruff_cache/
 .env
+
+# git worktrees created by EnterWorktree (prior layer builds used this path)
+.claude/worktrees/
