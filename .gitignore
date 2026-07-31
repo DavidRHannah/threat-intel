@@ -6,7 +6,27 @@ cdk.out/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 .env
 
+# OS / editor cruft
+.DS_Store
+.idea/
+.vscode/
+
 # git worktrees created by EnterWorktree (prior layer builds used this path)
-.claude/worktrees/
+.claude/
+
+# per-build agent scratch state (see CLAUDE.md build history — this bit us once already)
+.superpowers/
+
+/*-layer
+/docs
+/plans
+/progress-reports
+/requirements
+idea.md
+technical-specification.md
+CLAUDE.md
