@@ -26,6 +26,7 @@ from src.collection.rest.abusech import (
     MalwareBazaarNormalizer,
     ThreatFoxNormalizer,
     UrlhausNormalizer,
+    _parse_abusech_timestamp,
     process_malwarebazaar,
     process_threatfox,
     process_urlhaus,
@@ -333,6 +334,14 @@ class TestThreatFox:
         ).get("Messages", [])
         bodies = [json.loads(json.loads(m["Body"])["Message"]) for m in messages]
         assert {b["rel_type"] for b in bodies} == {"COMMUNICATES_WITH", "HAS_SAMPLE"}
+        # The message must be self-describing: `merge_key` is a lowercased name that is
+        # UNIQUE only per-label, so without start_label L4 cannot tell which entity the
+        # edge touched. event_time carries the write's own instant so an SNS redelivery
+        # replays it rather than advancing the consumer's novelty clock.
+        for b in bodies:
+            assert b["start_label"] == "MalwareFamily"
+            assert b["end_label"] == "IOC"
+            assert b["event_time"] == now.isoformat()
 
     def test_credential_loaded_via_load_credential(self, driver, aws):
         client = FakeHttpClient(FakeResponse(_load("threatfox_recent.json")))
@@ -372,3 +381,55 @@ class TestThreatFox:
         client = FakeHttpClient(FakeResponse({"query_status": "no_results"}, status_code=200))
         with pytest.raises(NoRetryError):
             process_threatfox(driver, client, now=datetime.now(timezone.utc))
+
+
+_NOW = datetime(2026, 7, 21, 0, 0, tzinfo=timezone.utc)
+
+
+class TestFirstSeenNormalization:
+    """The two abuse.ch feeds emit `first_seen` in two different shapes, both UTC.
+    Written verbatim they land on the node as a STRING, which `src/scoring/relevance.py`
+    treats as undatable -- so an event-less abuse.ch IOC scored novelty 0."""
+
+    def test_malwarebazaar_shape_parses(self):
+        assert _parse_abusech_timestamp("2026-07-20 09:00:00", now=_NOW) == datetime(
+            2026, 7, 20, 9, 0, tzinfo=timezone.utc
+        )
+
+    def test_threatfox_shape_with_trailing_utc_parses_to_the_same_instant(self):
+        assert _parse_abusech_timestamp("2026-07-20 09:00:00 UTC", now=_NOW) == datetime(
+            2026, 7, 20, 9, 0, tzinfo=timezone.utc
+        )
+
+    @pytest.mark.parametrize("raw", ["", None, "not a date", "2026-13-45 99:99:99"])
+    def test_untrustworthy_input_is_omitted_rather_than_written_raw(self, raw):
+        assert _parse_abusech_timestamp(raw, now=_NOW) is None
+
+    def test_a_future_timestamp_is_clamped_to_ingest_time(self):
+        """`first_seen` is publisher-controlled: an upstream clock error (or a hostile
+        feed) must not be able to mint maximum novelty."""
+        assert _parse_abusech_timestamp("2099-01-01 00:00:00", now=_NOW) == _NOW
+
+    def test_malwarebazaar_normalizer_emits_a_datetime_not_a_string(self):
+        entries = MalwareBazaarNormalizer().parse(_load("malwarebazaar_recent.json"))
+        assert isinstance(entries[0].properties["first_seen"], datetime)
+
+    def test_threatfox_normalizer_emits_a_datetime_not_a_string(self):
+        entries = ThreatFoxNormalizer().parse(_load("threatfox_recent.json"))
+        assert isinstance(entries[0].ioc_properties["first_seen"], datetime)
+
+    def test_an_unparseable_value_leaves_the_key_off_the_properties_dict(self):
+        payload = {"data": [{"sha256_hash": "a" * 64, "first_seen": "garbage"}]}
+        entries = MalwareBazaarNormalizer().parse(payload)
+        assert "first_seen" not in entries[0].properties
+
+
+def test_a_normalized_ioc_scores_nonzero_novelty():
+    """The reason Part B exists. Before normalization `_age_days` saw a STRING, returned
+    the unusable-clock sentinel, and every event-less abuse.ch IOC scored novelty 0."""
+    from src.scoring.relevance import _age_days
+
+    entries = MalwareBazaarNormalizer().parse(_load("malwarebazaar_recent.json"))
+    first_seen = entries[0].properties["first_seen"]
+    age = _age_days(first_seen, datetime(2026, 7, 21, 9, 0, tzinfo=timezone.utc))
+    assert age == pytest.approx(1.0), "a normalized first_seen must be datable"

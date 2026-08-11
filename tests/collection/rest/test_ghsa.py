@@ -14,7 +14,9 @@ Runs against a real local Neo4j (docker compose up -d neo4j).
 import json
 from pathlib import Path
 
+import boto3
 import pytest
+from moto import mock_aws
 
 from src.collection.rest.ghsa import GhsaNormalizer, process_ghsa
 from src.collection.rest.http_errors import NoRetryError, RetryableError, RetryAfterError
@@ -67,8 +69,14 @@ class FakeSnsClient:
     def __init__(self):
         self.published: list[dict] = []
 
-    def publish(self, TopicArn, Message):
-        self.published.append({"TopicArn": TopicArn, "Message": json.loads(Message)})
+    def publish(self, TopicArn, Message, MessageAttributes=None):
+        self.published.append(
+            {
+                "TopicArn": TopicArn,
+                "Message": json.loads(Message),
+                "MessageAttributes": MessageAttributes,
+            }
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -122,6 +130,28 @@ def _article_props(driver, source_guid_key: str) -> dict | None:
     return dict(rec["a"]) if rec else None
 
 
+@pytest.fixture
+def aws(monkeypatch):
+    """Moto-mocked SNS topic for `publish_node_write` (Task 1.2), which `enrich_cve`
+    (Task 8) now fires on a real cvss_score change -- shared by every caller on the
+    on-demand enrichment path, GHSA included. Without this, `publish_node_write`'s
+    `get_config("graph_writes_topic_arn")` KeyErrors (no default -- deliberately, see
+    CLAUDE.md's `00-infra` Critical: a silent default here would be the same bug class
+    as the unpublished topic ARN). Mirrors `tests/collection/rest/test_otx.py`'s `aws`
+    fixture; GHSA's OWN Article announcement uses its separate hand-rolled `sns_client`
+    injection point and is unaffected."""
+    with mock_aws():
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+        sns = boto3.client("sns", region_name="us-east-1")
+        topic_arn = sns.create_topic(Name="graph-writes")["TopicArn"]
+        monkeypatch.setenv("CROSSROADS_GRAPH_WRITES_TOPIC_ARN", topic_arn)
+        config.get_config.cache_clear()
+        yield
+        config.get_config.cache_clear()
+
+
 # --- Unit: normalizer parses the fixture shape ----------------------------------
 
 
@@ -150,7 +180,7 @@ def test_normalize_returns_cve_and_article_upserts():
 # --- FR-DC-22 / FR-DC-01: structured CVE path + Article path -------------------
 
 
-def test_advisory_with_cve_creates_stub_enriches_and_publishes_article(driver):
+def test_advisory_with_cve_creates_stub_enriches_and_publishes_article(driver, aws):
     ghsa_client = FakeHttpClient(FakeResponse(_load("ghsa_advisories.json")))
     nvd_client = FakeNvdHttpClient(FakeResponse(_load("nvd_single_cve.json")))
     sns_client = FakeSnsClient()
@@ -180,8 +210,15 @@ def test_advisory_with_cve_creates_stub_enriches_and_publishes_article(driver):
     assert article_msg["cleaned_text"] == article["cleaned_text"]
     assert "rel_type" not in article_msg  # not an edge-shaped publish_graph_write message
 
+    article_publish = next(
+        p for p in sns_client.published if p["Message"]["guid"] == "GHSA-abcd-1234-efgh"
+    )
+    assert article_publish["MessageAttributes"] == {
+        "message_type": {"DataType": "String", "StringValue": "article"}
+    }
 
-def test_advisory_without_cve_still_produces_article(driver):
+
+def test_advisory_without_cve_still_produces_article(driver, aws):
     """FR-DC-01: an advisory GitHub hasn't yet linked to a CVE must not block its
     Article from being created -- structured CVE-linking and the Article are
     independent outputs."""
@@ -197,7 +234,7 @@ def test_advisory_without_cve_still_produces_article(driver):
     assert "path traversal" in article["cleaned_text"]
 
 
-def test_credential_loaded_via_load_credential_never_hardcoded(driver):
+def test_credential_loaded_via_load_credential_never_hardcoded(driver, aws):
     """Asserts the GHSA token flows into the outgoing request's Authorization header
     from load_credential (env var CROSSROADS_GHSA_TOKEN set by the autouse fixture),
     never a hardcoded literal."""

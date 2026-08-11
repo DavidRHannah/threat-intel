@@ -194,3 +194,61 @@ def test_concurrent_inferred_writes_lose_no_contribution(driver):
     r = _edge(driver)
     assert r["supporting_article_count"] == n
     assert sorted(r["contributing_story_cluster_ids"]) == sorted(f"sc-conc-{i}" for i in range(n))
+
+
+# --- Task 5.0: the three-state outcome (shared L3 contract) -------------------------
+
+
+def test_upsert_inferred_assertion_returns_three_distinct_states(driver):
+    """`merge_relationship`'s coarse created/matched cannot express the distinction L4
+    needs: on an EXISTING edge it says `matched` both when a NEW story cluster raises the
+    noisy-OR (genuine new evidence) and when the SAME cluster is re-emitted (a true
+    no-op). Collapsing those suppresses the novelty spike for real news -- so the
+    discriminator is `already_seen`, not whether a row was written.
+    """
+    now = datetime.now(timezone.utc)
+    key = {"merge_key": "apt-assert-test"}
+
+    def _upsert(cluster_id):
+        with driver.session() as s:
+            return s.execute_write(lambda tx: upsert_inferred_assertion(
+                tx, start_label="CVE", start_key={"cve_id": "CVE-2026-0002"},
+                end_label="ThreatActor", end_key=key,
+                rel_type="EXPLOITED_BY", story_cluster_id=cluster_id, contribution=0.5,
+                source_article_ids=["art-1"], now=now,
+            ))
+
+    assert _upsert("sc-a") == "created"    # the edge is new
+    assert _upsert("sc-b") == "updated"    # a NEW cluster contributed
+    assert _upsert("sc-b") == "matched"    # the SAME cluster re-emitted: no-op
+
+
+def test_a_re_emitted_cluster_does_not_move_confidence(driver):
+    """The `updated`/`matched` split must track the actual noisy-OR, not just bookkeeping."""
+    now = datetime.now(timezone.utc)
+    key = {"merge_key": "apt-assert-test"}
+
+    def _upsert(cluster_id):
+        with driver.session() as s:
+            return s.execute_write(lambda tx: upsert_inferred_assertion(
+                tx, start_label="CVE", start_key={"cve_id": "CVE-2026-0002"},
+                end_label="ThreatActor", end_key=key,
+                rel_type="EXPLOITED_BY", story_cluster_id=cluster_id, contribution=0.5,
+                source_article_ids=["art-1"], now=now,
+            ))
+
+    def _confidence():
+        with driver.session() as s:
+            return s.run(
+                "MATCH (:CVE {cve_id:'CVE-2026-0002'})-[r:EXPLOITED_BY]->"
+                "(:ThreatActor {merge_key:'apt-assert-test'}) "
+                "RETURN r.inferred_confidence AS c"
+            ).single()["c"]
+
+    _upsert("sc-a")
+    after_first = _confidence()
+    assert _upsert("sc-b") == "updated"
+    after_new_cluster = _confidence()
+    assert after_new_cluster > after_first          # genuine new evidence moved it
+    assert _upsert("sc-b") == "matched"
+    assert _confidence() == after_new_cluster       # the no-op moved nothing

@@ -197,3 +197,11 @@ def test_env_var_matches_get_config_for_any_env():
     template, _ = _template(env_name="prod")
     # Smoke check that a prod synth still produces the same shape.
     template.resource_count_is("AWS::Lambda::Function", 4)
+
+
+def test_extraction_subscription_filters_to_article_messages_only():
+    """L2 Extraction must not be invoked for L4's edge_write/node_write traffic."""
+    template, _ = _template()
+    template.has_resource_properties(
+        "AWS::SNS::Subscription", {"FilterPolicy": {"message_type": ["article"]}}
+    )

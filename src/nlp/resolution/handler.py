@@ -34,6 +34,7 @@ from src.common.neo4j_driver import get_driver
 from src.nlp.messages import RawMention, ResolvedArticle, ResolvedEntity
 from src.nlp.resolution._shared import article_ref_from_id
 from src.nlp.resolution.deterministic import resolve_cve, resolve_ioc, resolve_ttp
+from src.nlp.resolution.fuzzy import _LABEL_BY_TYPE as _FUZZY_LABEL_BY_TYPE
 from src.nlp.resolution.fuzzy import resolve_fuzzy
 
 # Deterministic types get stale-mention retraction (FR-RES-11); fuzzy types
@@ -43,6 +44,10 @@ _DETERMINISTIC_KEY_PROP_BY_TYPE = {
     "cve": "cve_id", "ttp": "technique_id", "ioc": "value_type_key",
 }
 _FUZZY_TYPES = {"threat_actor", "malware_family"}
+
+# The endpoint LABEL that travels with every MENTIONS announcement. Reuses fuzzy.py's map
+# for the fuzzy half rather than restating it, so the two cannot drift.
+_LABEL_BY_TYPE = {**_DETERMINISTIC_LABEL_BY_TYPE, **_FUZZY_LABEL_BY_TYPE}
 
 
 def _entity_key(entity_type: str, canonical_node_key: str) -> dict:
@@ -108,10 +113,20 @@ def _process_article(
 
         publish_graph_write(
             rel_type="MENTIONS",
-            start_key=article_ref_from_id(article_id),
+            # `article_id` IS `source_guid_key` (see `article_ref_from_id`'s docstring) --
+            # NOT `article_ref_from_id(article_id)`, which is the raw (source_id, guid)
+            # pair `write_mentions_edge` needs internally, not the shape L4's
+            # `_handle_edge_write` reads (`start_key["source_guid_key"]`). Publishing the
+            # raw pair left `article_key` always None on every MENTIONS message, so
+            # `_refine_mention` silently no-opped on every delivery -- FR-ES-08 was inert
+            # in production despite passing tests, because no test drove the real
+            # publisher into the real handler for this edge type.
+            start_key={"source_guid_key": article_id},
             end_key=_entity_key(mention.entity_type, resolved.canonical_node_key),
             outcome=resolved.resolution_status,
             origin="resolution",
+            start_label="Article",
+            end_label=_LABEL_BY_TYPE.get(mention.entity_type),
         )
 
     # FR-RES-11: retract deterministic-type MENTIONS absent from the new set;

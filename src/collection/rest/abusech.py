@@ -33,6 +33,7 @@ hardcoded (FR-DC-18). abuse.ch's newer API requires an `Auth-Key` header per fee
 FR-DC-01 (IOC, MalwareFamily).
 """
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -45,11 +46,56 @@ from src.common.config import get_config
 from src.common.graph.assertion_edges import upsert_authoritative_assertion
 from src.common.graph.publish import publish_graph_write
 
+logger = logging.getLogger(__name__)
+
 URLHAUS_SOURCE_ID = "urlhaus"
 MALWAREBAZAAR_SOURCE_ID = "malwarebazaar"
 THREATFOX_SOURCE_ID = "threatfox"
 
 _HASH_TYPES = {"md5_hash", "sha1_hash", "sha256_hash"}
+
+# abuse.ch emits `first_seen` in two shapes, both documented as UTC:
+#   MalwareBazaar  "2026-07-20 09:00:00"
+#   ThreatFox      "2026-07-20 08:00:00 UTC"
+# Written verbatim they land on the node as a STRING, and src/scoring/relevance.py's
+# _age_days treats any non-date/datetime as undatable -- so the IOC scores novelty 0.
+# Normalizing HERE, at the writer, is what makes the property mean one thing for every
+# future consumer; _age_days stays reader-agnostic and total.
+_ABUSECH_TS_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def _parse_abusech_timestamp(raw, *, now: datetime | None = None) -> datetime | None:
+    """Normalize an abuse.ch `first_seen` to a tz-aware datetime, or None to mean OMIT.
+
+    Returning None (rather than the raw string) keeps junk off the node: the scoring
+    outcome is unchanged -- undatable, as before -- but nothing downstream has to defend
+    against a string in a temporal property.
+
+    `first_seen` is publisher-controlled, so a future value is CLAMPED to ingest time
+    rather than trusted: clamping preserves the ordering the feed intended while denying a
+    bad clock the ability to mint novelty 1.0. `now` is injected so the clamp is testable
+    without patching the clock.
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    now = now or datetime.now(timezone.utc)
+    cleaned = raw.strip().removesuffix(" UTC").strip()
+    try:
+        parsed = datetime.strptime(cleaned, _ABUSECH_TS_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        logger.warning("abuse.ch first_seen not in a known shape, omitting: %r", raw)
+        return None
+    if parsed > now:
+        logger.warning("abuse.ch first_seen is in the future, clamping to now: %r", raw)
+        return now
+    return parsed
+
+
+def _first_seen_prop(raw) -> dict:
+    """`{}` when the value is untrustworthy -- the key is then genuinely ABSENT from the
+    properties dict, not present-and-None (which would blank the stored value on re-MERGE)."""
+    parsed = _parse_abusech_timestamp(raw)
+    return {"first_seen": parsed} if parsed is not None else {}
 
 
 class _HttpClient(Protocol):
@@ -167,7 +213,7 @@ class MalwareBazaarNormalizer:
                         "file_type": item.get("file_type"),
                         "signature": item.get("signature"),
                         "tags": item.get("tags", []),
-                        "first_seen": item.get("first_seen"),
+                        **_first_seen_prop(item.get("first_seen")),
                     },
                 )
             )
@@ -246,7 +292,7 @@ class ThreatFoxNormalizer:
                     ioc_properties={
                         "threat_type": item.get("threat_type"),
                         "confidence_level": item.get("confidence_level"),
-                        "first_seen": item.get("first_seen"),
+                        **_first_seen_prop(item.get("first_seen")),
                     },
                     malware_properties={
                         "name": malware_printable,
@@ -334,6 +380,9 @@ def process_threatfox(driver, http_client: _HttpClient, *, now) -> int:
                 end_key={"value_type_key": natural_keys.ioc_key(entry.value, entry.ioc_type)},
                 outcome=outcome,
                 origin="authoritative",
+                start_label="MalwareFamily",
+                end_label="IOC",
+                event_time=now,
             )
 
     return len(entries)

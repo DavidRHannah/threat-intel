@@ -1,0 +1,35 @@
+# Scoring knobs (technical-specification.md §7). Git is the single source of truth:
+# ScoringStack reads this at CDK synth time and emits each key as a CROSSROADS_<KEY>
+# Lambda environment variable, which src/common/config.py resolves first.
+#
+# CALIBRATION IS OPEN (technical-specification.md §11). Every value below is a reasoned
+# default, not an empirical one. Values marked `# spike` have no defensible basis until
+# real data exists -- see §6.
+
+# --- severity ---
+w_impact: 0.3
+w_likelihood: 0.5
+w_adoption: 0.2
+adoption_saturation_k: 5.0      # spike
+kev_floor: 0.6
+band_critical: 0.8
+band_high: 0.6
+band_medium: 0.4
+
+# --- relevance ---
+w_novelty: 0.5
+w_credibility: 0.25
+w_centrality: 0.25
+novelty_halflife_days: 7.0      # spike
+centrality_saturation_c: 10.0   # spike
+
+# --- confidence ---
+decay_halflife_days: 180.0
+
+# --- pruning (FR-ES-10) ---
+prune_confidence_floor: 0.2     # spike
+prune_stale_days: 90.0          # spike
+edge_confidence_floor: 0.1      # spike
+
+# --- operational ---
+sweep_batch_size: 500

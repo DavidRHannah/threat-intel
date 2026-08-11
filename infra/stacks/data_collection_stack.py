@@ -183,7 +183,7 @@ class DataCollectionStack(Stack):
         rest_deps = ("httpx==0.28.1", "neo4j==6.2.0")
 
         nvd_fn = self._rest_lambda(
-            "NvdFunction", "src.collection.rest.nvd.handler", rest_deps
+            "NvdFunction", "src.collection.rest.nvd.handler", rest_deps, publishes=True
         )
         # NVD reads/writes PollingState (last_success_at window); no credential (keyless).
         grant_dynamodb_read_write(nvd_fn.role, polling)
@@ -202,7 +202,8 @@ class DataCollectionStack(Stack):
         grant_ssm_read(self, otx_fn.role, env_name=env_name, param_names=["otx_api_key"])
 
         cisa_fn = self._rest_lambda(
-            "CisaKevFunction", "src.collection.rest.cisa_kev.handler", rest_deps
+            "CisaKevFunction", "src.collection.rest.cisa_kev.handler", rest_deps,
+            publishes=True,
         )  # CISA KEV needs no credential (spec §6).
 
         urlhaus_fn = self._rest_lambda(

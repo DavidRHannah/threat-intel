@@ -39,6 +39,7 @@ from typing import Any, Protocol
 from src.collection.rest.http_errors import handle_response
 from src.collection.rest.normalizer import NodeUpsert
 from src.common.config import get_config
+from src.common.graph.publish import publish_node_write
 from src.common.graph.structural_edges import resync_categorized_as
 
 
@@ -184,23 +185,57 @@ def _is_newer(incoming: str | None, stored: str | None) -> bool:
     return incoming > stored
 
 
-def _apply_cve_tx(tx, parsed: ParsedCve, *, allow_create: bool) -> str:
+def _apply_cve_tx(tx, parsed: ParsedCve, *, allow_create: bool) -> tuple[str, bool]:
     """Read-decide-write for one CVE, atomically inside a single execute_write callback.
 
-    Returns one of: "absent" (delta path, CVE not in graph -> untouched, uncounted),
-    "resynced" (fields set + CATEGORIZED_AS re-synced + last_modified_date advanced),
-    "stale" (fields set, re-sync SKIPPED because the payload is not newer)."""
-    row = tx.run(
-        "MATCH (c:CVE {cve_id:$id}) RETURN c.last_modified_date AS lmd", id=parsed.cve_id
-    ).single()
+    Returns `(outcome, cvss_changed)`.
 
-    if row is None and not allow_create:
-        return "absent"  # FR-DC-23: the delta poll never creates a CVE node.
+    `outcome` is one of: "absent" (delta path, CVE not in graph -> untouched,
+    uncounted), "resynced" (fields set + CATEGORIZED_AS re-synced + last_modified_date
+    advanced), "stale" (fields set, re-sync SKIPPED because the payload is not newer).
 
-    stored_lmd = row["lmd"] if row is not None else None
+    `cvss_changed` is True only if this call's incoming `cvss_score` differs numerically
+    from the value stored BEFORE this write.
 
+    Neo4j takes no read locks: a plain `MATCH ... RETURN` here, in its own transaction,
+    does not prevent a second concurrent transaction (`enrich_cve` runs from the NVD,
+    GHSA, OTX, and KEV Lambdas over non-FIFO SQS with no reserved concurrency) from
+    reading the SAME stale `cvss_score` before this one commits -- which can cause a
+    duplicate announce, or, if the concurrent transaction holds a STALE payload, a
+    missed announce (it computes `incoming == its own stale read` and stays silent).
+    `apoc.lock.nodes([c])` alone is NOT enough: projecting a property off the same binding
+    that fed the lock returns what that cursor already saw -- the PRE-lock value -- so the
+    lock is present, syntactically correct, and useless (measured: it permitted every one
+    of 10 concurrent runners to announce). The deciding reads are therefore issued by a
+    SECOND `MATCH` after the lock, whose cursor sees freshly committed state. Same shape as
+    `src/scoring/confidence.py`. Do not collapse the two MATCHes back into one."""
     if allow_create:
-        tx.run("MERGE (c:CVE {cve_id:$id})", id=parsed.cve_id).consume()
+        row = tx.run(
+            "MERGE (c:CVE {cve_id:$id}) "
+            "WITH c "
+            "CALL apoc.lock.nodes([c]) "
+            "WITH c "
+            "MATCH (n:CVE {cve_id:$id}) "
+            "RETURN n.last_modified_date AS lmd, n.cvss_score AS cvss_score",
+            id=parsed.cve_id,
+        ).single()
+    else:
+        row = tx.run(
+            "MATCH (c:CVE {cve_id:$id}) "
+            "CALL apoc.lock.nodes([c]) "
+            "WITH c "
+            "MATCH (n:CVE {cve_id:$id}) "
+            "RETURN n.last_modified_date AS lmd, n.cvss_score AS cvss_score",
+            id=parsed.cve_id,
+        ).single()
+
+    if row is None:
+        return "absent", False  # FR-DC-23: the delta poll never creates a CVE node.
+
+    stored_lmd = row["lmd"]
+    stored_cvss = row["cvss_score"]
+    incoming_cvss = parsed.properties.get("cvss_score")
+    cvss_changed = incoming_cvss is not None and incoming_cvss != stored_cvss
 
     # Scalar fields are last-write-wins and always applied (guard scopes to the re-sync
     # only). last_modified_date is deliberately NOT in this SET — it is the watermark.
@@ -230,9 +265,9 @@ def _apply_cve_tx(tx, parsed: ParsedCve, *, allow_create: bool) -> str:
                 id=parsed.cve_id,
                 lmd=parsed.last_modified,
             ).consume()
-        return "resynced"
+        return "resynced", cvss_changed
 
-    return "stale"  # freshness guard: skip the CATEGORIZED_AS re-sync for this call.
+    return "stale", cvss_changed  # freshness guard: skip the CATEGORIZED_AS re-sync only.
 
 
 def _alert(_response: Any) -> None:
@@ -267,9 +302,24 @@ def poll_nvd_delta(
     updated = 0
     with driver.session() as session:
         for record in parsed:
-            outcome = session.execute_write(_apply_cve_tx, record, allow_create=False)
+            outcome, cvss_changed = session.execute_write(
+                _apply_cve_tx, record, allow_create=False
+            )
             if outcome != "absent":
                 updated += 1
+            # Publish immediately after THIS record's transaction commits (still
+            # post-commit -- a subscriber reading the node back sees the committed
+            # cvss_score), rather than batching to the end of the loop. Batching would
+            # mean a later record's execute_write raising (Neo4j blip, Lambda timeout)
+            # discards the announcements for every already-committed record before it;
+            # a retry re-derives `cvss_changed=False` for those (the score is already
+            # updated), turning a transient failure into a PERMANENT missed
+            # announcement (Task 1.2 fix round 1, finding I2).
+            if cvss_changed:
+                publish_node_write(
+                    label="CVE", key={"cve_id": record.cve_id}, changed_fields=["cvss_score"]
+                )
+
     return updated, window_end
 
 
@@ -336,8 +386,16 @@ def enrich_cve(driver, http_client: _HttpClient, cve_id: str) -> None:
     body = handle_response(response, alert_fn=_alert)
 
     parsed = NvdNormalizer().parse(body)
+    cvss_changed = False
     with driver.session() as session:
         for record in parsed:
             if record.cve_id != cve_id:
                 continue  # defensive: only the requested CVE
-            session.execute_write(_apply_cve_tx, record, allow_create=True)
+            _outcome, cvss_changed = session.execute_write(
+                _apply_cve_tx, record, allow_create=True
+            )
+
+    # Publish only AFTER the transaction commits, so a subscriber reading the node back
+    # sees the committed cvss_score.
+    if cvss_changed:
+        publish_node_write(label="CVE", key={"cve_id": cve_id}, changed_fields=["cvss_score"])

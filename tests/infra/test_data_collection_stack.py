@@ -173,3 +173,38 @@ def test_poller_has_no_neo4j_ssm_grant():
         assert "neo4j" not in rendered, (
             f"poller policy {lid} carries a neo4j SSM grant: {rendered}"
         )
+
+
+def _sns_publish_policies(template: Template, role_prefix: str) -> list[dict]:
+    """Inline policies for the role whose logical id starts with `role_prefix` that
+    carry an `sns:Publish` statement -- scoped the same way
+    `test_poller_has_no_neo4j_ssm_grant` scopes to a specific function's own role,
+    rather than asserting against the stack-wide policy set (which would pass even if
+    the grant landed on the wrong function, per this stack's own `publishes=True`
+    convention)."""
+    matches = []
+    for lid, policy in template.find_resources("AWS::IAM::Policy").items():
+        if not lid.startswith(role_prefix):
+            continue
+        statements = policy["Properties"]["PolicyDocument"]["Statement"]
+        if any(s.get("Action") == "sns:Publish" for s in statements):
+            matches.append(policy)
+    return matches
+
+
+def test_nvd_role_can_publish_to_graph_writes_topic():
+    """Task 1.2: NVD announces cvss_score changes as node_write events (L4 severity
+    trigger) -- its role needs sns:Publish on the graph-writes topic."""
+    template, _ = _template()
+    assert _sns_publish_policies(template, "NvdFunctionServiceRoleDefaultPolicy"), (
+        "NvdFunction's role has no sns:Publish grant on graph-writes"
+    )
+
+
+def test_cisa_kev_role_can_publish_to_graph_writes_topic():
+    """Task 1.2: CISA KEV announces exploited_in_wild flips as node_write events (L4
+    severity trigger) -- its role needs sns:Publish on the graph-writes topic."""
+    template, _ = _template()
+    assert _sns_publish_policies(template, "CisaKevFunctionServiceRoleDefaultPolicy"), (
+        "CisaKevFunction's role has no sns:Publish grant on graph-writes"
+    )

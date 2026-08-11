@@ -11,11 +11,29 @@ class GraphWritesTopic(Construct):
         super().__init__(scope, construct_id)
         self.topic = sns.Topic(self, "Topic", topic_name=topic_name)
 
-    def subscribe_lambda(self, fn: _lambda.IFunction) -> None:
-        """Subscribe `fn` to the graph-writes topic.
+    def subscribe_lambda(
+        self, fn: _lambda.IFunction, *, message_types: list[str] | None = None
+    ) -> None:
+        """Subscribe `fn` to the graph-writes topic, optionally filtered by message_type.
 
         No `id` param: `LambdaSubscription` derives the subscription's construct id from `fn`
         itself, so there is nothing for a caller-supplied id to name. An earlier signature took
         one and ignored it.
+
+        `message_types=None` means unfiltered -- the subscriber receives every message,
+        including future types it may not understand. Prefer an explicit allowlist.
+
+        DEPLOY ORDER: a filter policy drops any message whose `message_type` attribute is
+        missing, so every publisher must stamp the attribute (see
+        src/common/graph/publish.py) BEFORE a filtered subscription goes live.
         """
-        self.topic.add_subscription(subs.LambdaSubscription(fn))
+        filter_policy = None
+        if message_types is not None:
+            filter_policy = {
+                "message_type": sns.SubscriptionFilter.string_filter(
+                    allowlist=message_types
+                )
+            }
+        self.topic.add_subscription(
+            subs.LambdaSubscription(fn, filter_policy=filter_policy)
+        )

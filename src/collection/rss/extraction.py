@@ -25,6 +25,11 @@ reading Neo4j itself — FR-EX-12). The topic ARN is still resolved via
 `get_config("graph_writes_topic_arn")`, the same source `publish_graph_write`
 uses — never a hardcoded ARN or region.
 
+Also hand-rolled but NOT optional: the `message_type` MessageAttribute (`"article"`,
+`src.common.graph.publish.MESSAGE_TYPE_ARTICLE`). L4's Scoring subscription filters on
+this attribute; a publisher that omits it has every message silently dropped by any
+filtered subscriber, with no error, no DLQ, and no log (technical-specification.md §5).
+
 All external seams (the page fetch and the SNS client) are injected
 parameters so tests drive this module with fakes rather than monkeypatching
 `trafilatura`/`boto3`.
@@ -36,6 +41,7 @@ from typing import Any, Callable
 
 from src.common import natural_keys
 from src.common.config import get_config
+from src.common.graph.publish import MESSAGE_TYPE_ARTICLE, message_attributes
 from src.common.neo4j_driver import get_driver
 
 
@@ -124,8 +130,10 @@ def process_discovery_event(
     # source_guid_key: the Article has no separate id in the schema.
     sns_client.publish(
         TopicArn=topic_arn,
+        MessageAttributes=message_attributes(MESSAGE_TYPE_ARTICLE),
         Message=json.dumps(
             {
+                "message_type": MESSAGE_TYPE_ARTICLE,
                 "node_label": "Article",
                 "article_id": source_guid_key,
                 "source_id": source_id,

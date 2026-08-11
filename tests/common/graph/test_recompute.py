@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -99,3 +99,103 @@ def test_recompute_applies_when_the_feeds_source_node_is_absent(driver):
         ).single()["c"]
     assert touched == 1  # not 0: the edge must not be skipped
     assert conf == 0.85
+
+
+def test_recompute_does_not_revive_a_decayed_inferred_edge(driver):
+    """Spec gap 3: an L1 credibility edit must not undo L4's decay.
+
+    Before the fix this asserts 0.8 (the un-decayed base) and fails.
+    """
+    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    with driver.session() as s:
+        s.run(
+            "MERGE (c:CVE {cve_id:'CVE-2026-8001'}) SET c.test_fixture = true "
+            "MERGE (a:ThreatActor {merge_key:'apt-recompute-test'}) "
+            "SET a.test_fixture = true "
+            "MERGE (c)-[r:EXPLOITED_BY]->(a) "
+            "SET r.feed_sources = ['otx'], r.origin = ['authoritative','inferred'], "
+            "    r.inferred_confidence = 0.8, r.authoritative_confidence = 0.6, "
+            "    r.confidence = 0.4, r.last_confirmed = $lc",
+            lc=now - timedelta(days=180),
+        ).consume()
+
+        s.execute_write(
+            lambda tx: recompute_confidence_for_feed(
+                tx, feed_source="otx", new_credibility_score=0.1,
+                decay_halflife_days=180.0, now=now,
+            )
+        )
+        row = s.run(
+            "MATCH ()-[r:EXPLOITED_BY]->(:ThreatActor {merge_key:'apt-recompute-test'}) "
+            "RETURN r.confidence AS c, r.inferred_confidence AS ic"
+        ).single()
+
+    # inferred 0.8 decayed one half-life = 0.4, which beats the new authoritative 0.1.
+    assert row["c"] == pytest.approx(0.4)
+    assert row["ic"] == pytest.approx(0.8)       # base still untouched
+
+
+def test_recompute_handles_missing_last_confirmed_without_nulling_confidence(driver):
+    """No `last_confirmed` must not NULL-poison the decay chain.
+
+    `duration.inSeconds(NULL, $now)` is NULL, which propagates through the arithmetic and
+    the CASE, and `SET r.confidence = NULL` deletes the property. The null guard on `days`
+    is what keeps this at the un-decayed base instead.
+    """
+    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    with driver.session() as s:
+        s.run(
+            "MERGE (c:CVE {cve_id:'CVE-2026-8002'}) SET c.test_fixture = true "
+            "MERGE (a:ThreatActor {merge_key:'apt-recompute-test'}) "
+            "SET a.test_fixture = true "
+            "MERGE (c)-[r:EXPLOITED_BY]->(a) "
+            "SET r.feed_sources = ['otx'], r.origin = ['inferred'], "
+            "    r.inferred_confidence = 0.8"
+        ).consume()
+
+        s.execute_write(
+            lambda tx: recompute_confidence_for_feed(
+                tx, feed_source="otx", new_credibility_score=0.1,
+                decay_halflife_days=180.0, now=now,
+            )
+        )
+        row = s.run(
+            "MATCH (c:CVE {cve_id:'CVE-2026-8002'})-[r:EXPLOITED_BY]->"
+            "(:ThreatActor {merge_key:'apt-recompute-test'}) RETURN r.confidence AS c"
+        ).single()
+
+    assert row["c"] is not None
+    assert row["c"] == pytest.approx(0.8)
+
+
+def test_recompute_clamps_a_future_last_confirmed(driver):
+    """A future `last_confirmed` must not decay in reverse and exceed the immutable base.
+
+    Unclamped, negative days makes `0.5 ^ (days/halflife)` > 1, so a 0.8 base with
+    last_confirmed 31 days in the future computes to ~0.9014 -- above the base it was
+    derived from. The `days < 0.0` clamp is what keeps decayed <= base.
+    """
+    now = datetime(2026, 7, 30, tzinfo=timezone.utc)
+    with driver.session() as s:
+        s.run(
+            "MERGE (c:CVE {cve_id:'CVE-2026-8003'}) SET c.test_fixture = true "
+            "MERGE (a:ThreatActor {merge_key:'apt-recompute-test'}) "
+            "SET a.test_fixture = true "
+            "MERGE (c)-[r:EXPLOITED_BY]->(a) "
+            "SET r.feed_sources = ['otx'], r.origin = ['inferred'], "
+            "    r.inferred_confidence = 0.8, r.last_confirmed = $lc",
+            lc=now + timedelta(days=31),
+        ).consume()
+
+        s.execute_write(
+            lambda tx: recompute_confidence_for_feed(
+                tx, feed_source="otx", new_credibility_score=0.1,
+                decay_halflife_days=180.0, now=now,
+            )
+        )
+        row = s.run(
+            "MATCH (c:CVE {cve_id:'CVE-2026-8003'})-[r:EXPLOITED_BY]->"
+            "(:ThreatActor {merge_key:'apt-recompute-test'}) RETURN r.confidence AS c"
+        ).single()
+
+    assert row["c"] <= 0.8 + 1e-9

@@ -168,7 +168,21 @@ def _write_match(driver: Driver, mention: RawMention, label: str, merge_key: str
 def _create_provisional(driver: Driver, mention: RawMention, label: str, normalized: str) -> str:
     """FR-RES-06: create a `:Provisional` node keyed on the normalized name,
     with `mitre_id=null`, alongside the canonical `:ThreatActor`/
-    `:MalwareFamily` label."""
+    `:MalwareFamily` label.
+
+    `first_seen` is stamped here because this is the ONLY producer of `:Provisional`
+    nodes and the only place that knows when one came into being. It is not bookkeeping:
+    L4's FR-ES-10 node-prune predicate (`src/scoring/confidence.py::_FLAG_NODES`) is
+    `confidence < floor AND first_seen older than prune_stale_days`, so without a written
+    `first_seen` that predicate matches nothing and the node half of FR-ES-10 is inert in
+    production. `last_significant_event` is not a substitute -- it is a recency stamp L4
+    writes itself, so keying staleness on it would express a different requirement.
+
+    ON CREATE only, never ON MATCH: this is a creation time, and a re-mention of the same
+    provisional entity must not reset the staleness clock and rescue a dead node forever.
+    Written as a tz-aware datetime so it lands as a Neo4j ZONED DATETIME -- `_FLAG_NODES`
+    guards with `IS :: ZONED DATETIME NOT NULL` and skips any other type.
+    """
     confidence = min(mention.extraction_confidence, 0.99)
     article_ref = article_ref_from_id(mention.article_id)
 
@@ -176,10 +190,12 @@ def _create_provisional(driver: Driver, mention: RawMention, label: str, normali
         tx.run(
             f"MERGE (n:{label}:Provisional {{merge_key: $merge_key}}) "
             "ON CREATE SET n.mitre_id = null, n.name = $name, "
-            "n.aliases = [$name], n.confidence = $confidence",
+            "n.aliases = [$name], n.confidence = $confidence, "
+            "n.first_seen = $first_seen",
             merge_key=normalized,
             name=mention.surface_text,
             confidence=confidence,
+            first_seen=_now(),
         ).consume()
         write_mentions_edge(
             tx,

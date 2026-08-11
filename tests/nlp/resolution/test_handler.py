@@ -180,3 +180,56 @@ def test_rejected_mention_is_not_published_as_graph_write(mock_publish, driver):
     _process_article(message, sqs_client, driver, _no_llm_needed)
 
     assert not mock_publish.called
+
+
+@patch("src.nlp.resolution.handler.publish_graph_write")
+def test_every_mention_type_publishes_its_endpoint_label(mock_publish, driver):
+    """The MENTIONS announcement must name the entity's LABEL, per entity type.
+
+    `merge_key` is a lowercased name whose UNIQUE constraint is per-label, so a
+    ThreatActor and a MalwareFamily can both be 'lazarus'. Without end_label L4 cannot
+    tell which node the edge touched -- and MENTIONS is the highest-volume path, i.e.
+    the only place that collision actually happens in production. The deterministic
+    types are pinned too so `_LABEL_BY_TYPE` cannot lose an entry silently.
+    """
+    with driver.session() as s:
+        s.run("MERGE (t:TTP {technique_id: 'T1566'}) SET t.test_fixture = true").consume()
+
+    llm_client = MagicMock()
+    block = MagicMock(type="tool_use", input={"matched_merge_key": None})
+    response = MagicMock()
+    response.content = [block]
+    llm_client.messages.create.return_value = response
+
+    message = {
+        "article_id": ARTICLE_ID,
+        "mentions": [
+            _mention("cve", "CVE-2099-40004"),
+            _mention("ttp", "T1566"),
+            _mention("ioc", "203.0.113.99"),
+            _mention("threat_actor", "Some Novel Label Actor"),
+            _mention("malware_family", "Some Novel Label Malware"),
+        ],
+    }
+
+    _process_article(message, MagicMock(), driver, lambda: llm_client)
+
+    _mark_test_fixture(driver, "CVE", "cve_id", "CVE-2099-40004")
+    _mark_test_fixture(driver, "IOC", "value_type_key", "203.0.113.99::ipv4")
+    _mark_test_fixture(driver, "ThreatActor", "merge_key", "some novel label actor")
+    _mark_test_fixture(driver, "MalwareFamily", "merge_key", "some novel label malware")
+
+    calls = mock_publish.call_args_list
+    assert len(calls) == 5
+    assert all(c.kwargs["start_label"] == "Article" for c in calls)
+
+    by_key = {
+        next(iter(c.kwargs["end_key"].values())): c.kwargs["end_label"] for c in calls
+    }
+    assert by_key == {
+        "CVE-2099-40004": "CVE",
+        "T1566": "TTP",
+        "203.0.113.99::ipv4": "IOC",
+        "some novel label actor": "ThreatActor",
+        "some novel label malware": "MalwareFamily",
+    }

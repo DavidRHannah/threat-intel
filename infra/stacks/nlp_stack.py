@@ -221,7 +221,9 @@ class NlpStack(Stack):
             env_name=env_name,
             param_names=["anthropic_api_key"],
         )
-        foundation.graph_writes_topic.subscribe_lambda(self.extraction_fn)
+        foundation.graph_writes_topic.subscribe_lambda(
+            self.extraction_fn, message_types=["article"]
+        )
 
         # --- Queues: created consumer-first so each producer can be granted send access
         # and given the downstream queue URL once it exists. -----------------------------

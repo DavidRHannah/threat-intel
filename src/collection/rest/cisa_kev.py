@@ -23,6 +23,7 @@ from src.collection.rest.http_errors import handle_response
 from src.collection.rest.normalizer import NodeUpsert
 from src.collection.rest.nvd import enrich_cve
 from src.common.config import get_config
+from src.common.graph.publish import publish_node_write
 
 SOURCE_ID = "cisa_kev"
 
@@ -84,18 +85,49 @@ class CisaKevNormalizer:
         ]
 
 
-def _apply_kev_entry_tx(tx, entry: ParsedKevEntry) -> str:
-    """Lazy-MERGE the CVE stub and SET the KEV fields, atomically. Returns 'created' (no
-    prior CVE node existed -> caller must trigger on-demand NVD enrichment, FR-DC-22) or
-    'existing' (already in the graph -> leave enrichment to NVD's own delta cadence)."""
-    row = tx.run("MATCH (c:CVE {cve_id:$id}) RETURN c", id=entry.cve_id).single()
-    outcome = "existing" if row is not None else "created"
-    tx.run("MERGE (c:CVE {cve_id:$id})", id=entry.cve_id).consume()
+def _apply_kev_entry_tx(tx, entry: ParsedKevEntry) -> tuple[str, bool]:
+    """Lazy-MERGE the CVE stub and SET the KEV fields, atomically. Returns
+    `(outcome, flipped)`:
+
+    - `outcome`: 'created' (no prior CVE node existed -> caller must trigger on-demand
+      NVD enrichment, FR-DC-22) or 'existing' (already in the graph -> leave enrichment
+      to NVD's own delta cadence).
+    - `flipped`: True only if THIS call actually changed `exploited_in_wild` from
+      absent/false to true.
+
+    Neo4j takes no read locks: an unlocked `MATCH ... RETURN` here would let two
+    concurrent KEV runs both read the same stale `exploited_in_wild`, both write, and
+    both announce (or, worse, a stale-payload write after a fresher one silently miss
+    an announce). `apoc.lock.nodes([c])` alone is NOT enough -- a property projected off
+    the binding that fed the lock returns the PRE-lock value, so every concurrent runner
+    would read `exploited_in_wild = false` and every one would announce.
+    `exploited_in_wild` is therefore read by a SECOND `MATCH` issued after the lock. Same
+    shape as `src/scoring/confidence.py`. Do not collapse the two MATCHes back into one.
+    A sentinel property
+    (`_kev_merge_new`) set only `ON CREATE` and removed inside the same statement is
+    how `outcome` ('created' vs 'existing') survives past the MERGE without a second,
+    unlocked read."""
+    row = tx.run(
+        "MERGE (c:CVE {cve_id:$id}) "
+        "ON CREATE SET c._kev_merge_new = true "
+        "WITH c "
+        "CALL apoc.lock.nodes([c]) "
+        "WITH c "
+        "MATCH (n:CVE {cve_id:$id}) "
+        "WITH n, coalesce(n._kev_merge_new, false) AS was_created, "
+        "     coalesce(n.exploited_in_wild, false) AS was_exploited "
+        "REMOVE n._kev_merge_new "
+        "RETURN was_created AS was_created, was_exploited AS was_exploited",
+        id=entry.cve_id,
+    ).single()
+    outcome = "created" if row["was_created"] else "existing"
+    was_exploited = row["was_exploited"]
     if entry.properties:
         tx.run(
             "MATCH (c:CVE {cve_id:$id}) SET c += $props", id=entry.cve_id, props=entry.properties
         ).consume()
-    return outcome
+    flipped = was_exploited is False and entry.properties.get("exploited_in_wild") is True
+    return outcome, flipped
 
 
 def _alert(_response: Any) -> None:
@@ -118,9 +150,24 @@ def process_cisa_kev(driver, http_client: _HttpClient, nvd_http_client: _HttpCli
     newly_created: list[str] = []
     with driver.session() as session:
         for entry in entries:
-            outcome = session.execute_write(_apply_kev_entry_tx, entry)
+            outcome, flipped = session.execute_write(_apply_kev_entry_tx, entry)
             if outcome == "created":
                 newly_created.append(entry.cve_id)
+            # Publish immediately after THIS entry's transaction commits (still
+            # post-commit, so a subscriber reading the node back sees the committed
+            # value), rather than batching to the end of the loop. Batching would mean
+            # a later entry raising (Neo4j blip, Lambda timeout) discards the
+            # announcements for every already-committed entry before it, and a retry
+            # re-derives `flipped=False` for those (the flag is already true) --
+            # turning a transient failure into a PERMANENT missed announcement
+            # (Task 1.2 fix round 1, finding I2).
+            if flipped:
+                publish_node_write(
+                    label="CVE",
+                    key={"cve_id": entry.cve_id},
+                    changed_fields=["exploited_in_wild"],
+                    origin="cisa-kev",
+                )
 
     # enrich_cve opens its own session/transaction -- called after the outer `with`
     # block closes rather than nested inside it.

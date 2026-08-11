@@ -18,6 +18,10 @@ a campaign) the structured fields don't capture.
   Task 5's RSS Extraction Lambda -- NOT `publish_graph_write`, which is edge-shaped and
   would be silently ignored by L2's Extraction Lambda (it filters on
   `node_label == "Article"` and reads `cleaned_text`/`title` straight off the message).
+  Also hand-rolled but NOT optional: the `message_type` MessageAttribute
+  (`src.common.graph.publish.MESSAGE_TYPE_ARTICLE`) -- L4's Scoring subscription filters
+  on it, so a publisher that omits it has every message silently dropped, no error, no
+  DLQ, no log (technical-specification.md §5).
 
 Credentials: GHSA's GraphQL API needs a GitHub token, loaded via `load_credential("ghsa",
 "token")` -- never hardcoded (FR-DC-18).
@@ -35,6 +39,7 @@ from src.collection.rest.nvd import enrich_cve
 from src.collection.rest.ssm_credentials import load_credential
 from src.common import natural_keys
 from src.common.config import get_config
+from src.common.graph.publish import MESSAGE_TYPE_ARTICLE, message_attributes
 
 SOURCE_ID = "ghsa"
 
@@ -206,8 +211,10 @@ def process_ghsa(
             # NOT publish_graph_write (see module docstring).
             sns_client.publish(
                 TopicArn=topic_arn,
+                MessageAttributes=message_attributes(MESSAGE_TYPE_ARTICLE),
                 Message=json.dumps(
                     {
+                        "message_type": MESSAGE_TYPE_ARTICLE,
                         "node_label": "Article",
                         "article_id": source_guid_key,
                         "source_id": SOURCE_ID,

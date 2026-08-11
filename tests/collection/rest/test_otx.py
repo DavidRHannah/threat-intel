@@ -213,13 +213,26 @@ def test_pulse_merges_iocs_lazy_cve_and_indicates_edges(driver, aws):
         assert e["authoritative_confidence"] == 0.42
 
     # publish_graph_write announced both edges (edge-shaped, via SQS subscribed to the
-    # moto-mocked graph-writes SNS topic).
+    # moto-mocked graph-writes SNS topic). enrich_cve (Task 1.2) also fires a node_write
+    # for CVE-2026-2002's first-ever cvss_score (None -> 9.8) on the same shared path.
     messages = aws["sqs"].receive_message(QueueUrl=aws["queue_url"], MaxNumberOfMessages=10).get(
         "Messages", []
     )
     bodies = [json.loads(json.loads(m["Body"])["Message"]) for m in messages]
-    assert len(bodies) == 2
-    assert all(b["rel_type"] == "INDICATES" for b in bodies)
+    edge_bodies = [b for b in bodies if b["message_type"] == "edge_write"]
+    node_bodies = [b for b in bodies if b["message_type"] == "node_write"]
+    assert len(edge_bodies) == 2
+    assert all(b["rel_type"] == "INDICATES" for b in edge_bodies)
+    # Self-describing endpoints + the write's own instant (see test_abusech.py's
+    # equivalent pin): without these L4 falls back to an ambiguous key lookup and to a
+    # per-delivery clock.
+    for b in edge_bodies:
+        assert b["start_label"] == "IOC"
+        assert b["end_label"] == "CVE"
+        assert b["event_time"] == now.isoformat()
+    assert len(node_bodies) == 1
+    assert node_bodies[0]["key"] == {"cve_id": "CVE-2026-2002"}
+    assert node_bodies[0]["changed_fields"] == ["cvss_score"]
 
 
 def test_missing_source_falls_back_to_default_credibility(driver, aws):

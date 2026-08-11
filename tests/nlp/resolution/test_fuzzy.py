@@ -1,10 +1,11 @@
+from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
 
 from src.common.neo4j_driver import close_driver, get_driver
 from src.nlp.messages import RawMention
-from src.nlp.resolution.fuzzy import build_alias_index, resolve_fuzzy
+from src.nlp.resolution.fuzzy import _create_provisional, build_alias_index, resolve_fuzzy
 
 ARTICLE_ID = "resolution-test-source::resolution-test-guid"
 
@@ -139,6 +140,39 @@ def test_resolve_fuzzy_novel_name_with_llm_none_creates_provisional(article):
             mkey=result.canonical_node_key,
         ).single()["c"]
     assert edge_count == 1
+
+
+# `first_seen` is stamped ON CREATE only (docstring in `_create_provisional`):
+# a re-mention of an already-provisional entity must not reset the staleness
+# clock, or FR-ES-10's node-prune predicate goes inert for exactly the
+# noisiest, most-mentioned entities. Calling `_create_provisional` twice for
+# the SAME merge_key -- the exact MERGE...ON CREATE SET Cypher the review
+# fault-injected (widening it to a trailing blanket SET left 278 tests
+# green) -- must leave `first_seen` pinned to the FIRST call's timestamp.
+def test_create_provisional_stamps_first_seen_on_create_only_not_on_rematch(article, monkeypatch):
+    first_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    second_ts = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    clock = iter([first_ts, first_ts, second_ts, second_ts])
+    monkeypatch.setattr("src.nlp.resolution.fuzzy._now", lambda: next(clock))
+
+    mention = _mention("Recurring Provisional Group")
+    normalized = "recurring provisional group"
+
+    merge_key_1 = _create_provisional(article, mention, "ThreatActor", normalized)
+    merge_key_2 = _create_provisional(article, mention, "ThreatActor", normalized)
+    assert merge_key_1 == merge_key_2 == normalized
+
+    with article.session() as s:
+        s.run(
+            "MATCH (n:ThreatActor:Provisional {merge_key: $key}) SET n.test_fixture = true",
+            key=normalized,
+        ).consume()
+        stamped = s.run(
+            "MATCH (n:ThreatActor:Provisional {merge_key: $key}) RETURN n.first_seen AS fs",
+            key=normalized,
+        ).single()["fs"]
+
+    assert stamped.to_native() == first_ts
 
 
 def test_resolve_fuzzy_confidence_capped_at_point_nine_nine_for_provisional(article):

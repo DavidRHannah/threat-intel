@@ -155,10 +155,11 @@ def _process_story_cluster(
         end_key = _entity_key(mapped.end_label, mapped.end_key)
         contribution = compute_contribution(mapped)
 
+        now = datetime.now(timezone.utc)
         with driver.session() as session:
-            session.execute_write(
+            outcome = session.execute_write(
                 lambda tx, mapped=mapped, start_key=start_key, end_key=end_key,
-                contribution=contribution: upsert_inferred_assertion(
+                contribution=contribution, now=now: upsert_inferred_assertion(
                     tx,
                     start_label=mapped.start_label,
                     start_key=start_key,
@@ -168,16 +169,23 @@ def _process_story_cluster(
                     story_cluster_id=story_cluster.story_cluster_id,
                     contribution=contribution,
                     source_article_ids=story_cluster.article_ids,
-                    now=datetime.now(timezone.utc),
+                    now=now,
                 )
             )
 
+        # The REAL created/updated/matched result, never a literal. A hardcoded value here
+        # told L4 that every candidate on every re-inference run was newsworthy, so
+        # re-inferring a week-old cluster re-spiked a stale entity's novelty to ~1.0 --
+        # exactly what last_significant_event exists to prevent (FR-ES-06).
         publish_graph_write(
             rel_type=mapped.edge_type,
             start_key=start_key,
             end_key=end_key,
-            outcome="inferred",
+            outcome=outcome,
             origin="inferred",
+            start_label=mapped.start_label,
+            end_label=mapped.end_label,
+            event_time=now,
         )
 
 

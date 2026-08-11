@@ -229,6 +229,9 @@ def process_otx(driver, http_client: _HttpClient, nvd_http_client: _HttpClient, 
                     end_key={"cve_id": cve_id},
                     outcome=outcome,
                     origin="authoritative",
+                    start_label="IOC",
+                    end_label="CVE",
+                    event_time=now,
                 )
 
     return len(newly_created)

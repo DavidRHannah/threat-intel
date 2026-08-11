@@ -135,8 +135,21 @@ def upsert_inferred_assertion(
         "last_confirmed": now,
     }
     on_create = {**props, "first_observed": now}
-    return merge_relationship(
+    outcome = merge_relationship(
         tx, start_label=start_label, start_key=start_key,
         end_label=end_label, end_key=end_key, rel_type=rel_type,
         on_create=on_create, on_match=props,
     )
+    # THREE states, not merge_relationship's two. The discriminator between the two
+    # non-create states is `already_seen` -- whether this story cluster had ALREADY
+    # contributed -- not whether a relationship row was written:
+    #   created -- the edge is new.
+    #   updated -- the edge existed and a NEW cluster moved the noisy-OR. Genuine new
+    #              evidence; merge_relationship reports this only as "matched".
+    #   matched -- `already_seen`: a re-emission of a cluster already folded in. A true
+    #              no-op, and the ONLY value L4 treats as "nothing newsworthy happened"
+    #              (src/scoring/event_handler.py). Collapsing `updated` into `matched`
+    #              would silently suppress the novelty spike for real new evidence.
+    if outcome == "created":
+        return "created"
+    return "matched" if already_seen else "updated"

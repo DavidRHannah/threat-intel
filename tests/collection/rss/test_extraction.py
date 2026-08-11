@@ -42,8 +42,14 @@ class FakeSNSClient:
     def __init__(self):
         self.published = []
 
-    def publish(self, *, TopicArn, Message):
-        self.published.append({"TopicArn": TopicArn, "Message": json.loads(Message)})
+    def publish(self, *, TopicArn, Message, MessageAttributes=None):
+        self.published.append(
+            {
+                "TopicArn": TopicArn,
+                "Message": json.loads(Message),
+                "MessageAttributes": MessageAttributes,
+            }
+        )
 
 
 @pytest.fixture
@@ -156,3 +162,6 @@ def test_sns_publish_carries_node_shaped_article_payload(driver, monkeypatch):
     assert message["title"] == "Some Threat Report"
     assert message["published_at"] == "2026-07-18T00:00:00+00:00"
     assert sns.published[0]["TopicArn"] == "arn:aws:sns:us-east-1:123:graph-writes"
+    assert sns.published[0]["MessageAttributes"] == {
+        "message_type": {"DataType": "String", "StringValue": "article"}
+    }

@@ -439,3 +439,62 @@ def test_entities_only_co_occurring_across_separate_clusters_get_no_edge(
             n=malware_n,
         ).single()
     assert cross_edge is None
+
+
+# --- Task 5.0: the published message must be truthful ------------------------------
+
+
+@patch("src.nlp.inference.handler.publish_graph_write")
+def test_publishes_the_real_outcome_and_labels_not_a_literal(
+    mock_publish, driver, re_cache_table
+):
+    """The hardcoded `outcome="inferred"` told L4 that every candidate on every
+    re-inference run was newsworthy, so re-inferring a week-old cluster re-spiked a stale
+    entity's novelty to ~1.0 -- exactly what `last_significant_event` exists to prevent
+    (FR-ES-06). Re-running the SAME cluster must report `matched`, not news.
+    """
+    cve_id = "CVE-2099-40010"
+    actor_key = "apt-outcome-test"
+    _seed_node(driver, "CVE", "cve_id", cve_id)
+    _seed_node(driver, "ThreatActor", "merge_key", actor_key)
+
+    article_id = f"{_TEST_PREFIX}::article-outcome"
+    cluster_id = f"{_TEST_PREFIX}::cluster-outcome"
+    _seed_article(driver, article_id, cluster_id, "APT was seen exploiting the CVE.", "hash-o")
+
+    entities = [
+        ResolvedEntity(cve_id, "cve", "resolved", 1.0),
+        ResolvedEntity(actor_key, "threat_actor", "resolved", 0.9),
+    ]
+    story_cluster = StoryCluster(
+        story_cluster_id=cluster_id, article_ids=[article_id],
+        union_resolved_entities=entities,
+    )
+    candidate = CandidateRelation(
+        entity_a={"canonical_node_key": actor_key, "entity_type": "threat_actor"},
+        entity_b={"canonical_node_key": cve_id, "entity_type": "cve"},
+        relationship="exploits",
+        direction="b_to_a",
+        assertion_strength=0.9,
+        polarity="asserted",
+    )
+
+    with patch(
+        "src.nlp.inference.handler.extract_relations", return_value=[candidate]
+    ):
+        _process_story_cluster(
+            story_cluster.to_dict(), driver, re_cache_table, _unused_llm_client
+        )
+        first = mock_publish.call_args.kwargs
+        # Re-inference of the SAME cluster: a true no-op, and L4 must be told so.
+        _process_story_cluster(
+            story_cluster.to_dict(), driver, re_cache_table, _unused_llm_client
+        )
+        second = mock_publish.call_args.kwargs
+
+    assert first["outcome"] == "created"
+    assert second["outcome"] == "matched"
+    # Endpoint labels resolve the merge_key ambiguity; event_time makes L4 idempotent.
+    assert first["start_label"] == "CVE"
+    assert first["end_label"] == "ThreatActor"
+    assert first["event_time"].tzinfo is not None
