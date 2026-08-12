@@ -23,7 +23,7 @@ htmlcov/
 .superpowers/
 
 /*-layer
-/docs
+/docs/*
 !/docs/screenshots
 /plans
 /progress-reports
