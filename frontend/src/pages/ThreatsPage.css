@@ -1,0 +1,111 @@
+.threats-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-6);
+}
+
+.page-header {
+  margin-bottom: var(--space-2);
+}
+
+.page-title {
+  font-size: var(--font-size-2xl);
+  font-weight: 700;
+  margin-bottom: var(--space-1);
+}
+
+.page-description {
+  color: var(--text-secondary);
+}
+
+.threats-controls {
+  padding: var(--space-4);
+  background: var(--bg-secondary);
+  display: flex;
+  align-items: center;
+}
+
+.control-group.row-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.control-label {
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.table-container {
+  padding: 0;
+  overflow-x: auto;
+}
+
+.threats-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.threats-table th,
+.threats-table td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-color);
+  font-size: var(--font-size-sm);
+}
+
+.threats-table th {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-weight: 600;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.sortable-th {
+  cursor: pointer;
+  user-select: none;
+}
+
+.sortable-th:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.sort-icon-idle {
+  color: var(--text-tertiary);
+  margin-left: var(--space-1);
+  vertical-align: middle;
+}
+
+.sort-icon-active {
+  color: var(--color-primary);
+  margin-left: var(--space-1);
+  vertical-align: middle;
+}
+
+.threat-row:hover {
+  background: var(--bg-hover);
+}
+
+.cve-id-cell a {
+  font-weight: 600;
+}
+
+.desc-cell {
+  max-width: 300px;
+}
+
+.truncate-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.date-cell {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}

@@ -1,0 +1,131 @@
+.watchlists-page {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: var(--space-6);
+  padding: var(--space-6);
+  height: 100%;
+}
+
+.sidebar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-4);
+}
+
+.watchlist-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.watchlist-card {
+  padding: var(--space-4);
+  transition: all var(--transition-fast);
+}
+
+.watchlist-card h4 {
+  margin-bottom: var(--space-2);
+  color: var(--text-primary);
+}
+
+.watchlist-card.active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-bg);
+}
+
+.watchlist-meta {
+  display: flex;
+  gap: var(--space-3);
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  margin-bottom: var(--space-2);
+}
+
+.watchlist-date {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  background: var(--bg-secondary);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-lg);
+  color: var(--text-secondary);
+}
+
+.detail-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.form-group label {
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.form-section {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.form-section h3 {
+  font-size: var(--font-size-lg);
+  color: var(--text-primary);
+}
+
+.selector-row, .route-row {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  margin-bottom: var(--space-3);
+}
+
+.selector-input, .route-input {
+  flex: 1;
+}
+
+.threshold-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.threshold-row label {
+  width: 100px;
+  font-size: var(--font-size-sm);
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+}
+
+.form-actions {
+  display: flex;
+  gap: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-color);
+}
+
+.help-text {
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+}

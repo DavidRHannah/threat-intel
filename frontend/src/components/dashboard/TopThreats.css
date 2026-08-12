@@ -1,0 +1,106 @@
+.top-threats {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.top-threats__header {
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.top-threats__title {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  margin-bottom: var(--space-3);
+  color: var(--text-primary);
+}
+
+.top-threats__tabs {
+  display: flex;
+  gap: var(--space-4);
+  position: relative;
+}
+
+.top-threats__tab {
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--text-secondary);
+  padding: var(--space-2) 0;
+  position: relative;
+  transition: color var(--transition-fast);
+}
+
+.top-threats__tab:hover {
+  color: var(--text-primary);
+}
+
+.top-threats__tab.active {
+  color: var(--color-primary);
+}
+
+.top-threats__tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background-color: var(--color-primary);
+  border-radius: var(--radius-full);
+}
+
+.top-threats__content {
+  padding: var(--space-2) var(--space-5) var(--space-4);
+  flex-grow: 1;
+}
+
+.top-threats__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.threat-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-3);
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-color-subtle);
+  border-radius: var(--radius-md);
+  transition: all var(--transition-fast);
+}
+
+.threat-item:hover {
+  border-color: var(--border-color-strong);
+  background-color: var(--bg-hover);
+  transform: translateX(2px);
+}
+
+.threat-item__main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.threat-item__name {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.threat-item__flag {
+  font-size: var(--font-size-lg);
+}
+
+.threat-item__stats {
+  display: flex;
+  gap: var(--space-3);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.threat-item__stat {
+  font-family: monospace;
+}

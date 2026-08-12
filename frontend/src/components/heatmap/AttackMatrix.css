@@ -1,0 +1,148 @@
+.attack-matrix-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  width: 100%;
+  overflow-x: auto;
+  padding-bottom: var(--space-4);
+}
+
+.attack-matrix {
+  display: grid;
+  gap: var(--space-2);
+  min-width: max-content;
+}
+
+.tactic-column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 140px;
+}
+
+.tactic-header {
+  position: sticky;
+  top: 0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  text-align: center;
+  z-index: 10;
+  box-shadow: var(--shadow-sm);
+}
+
+.tactic-name {
+  font-weight: 600;
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+}
+
+.tactic-id {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+}
+
+.technique-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.technique-cell {
+  position: relative;
+  text-align: left;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  color: #fff;
+  border: 1px solid rgba(0,0,0,0.1);
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+  cursor: pointer;
+}
+
+.technique-cell:hover {
+  transform: scale(1.05);
+  box-shadow: var(--shadow-md);
+  z-index: 20;
+}
+
+.technique-cell-header {
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  opacity: 0.9;
+  margin-bottom: 2px;
+}
+
+.technique-name {
+  font-size: var(--font-size-xs);
+  line-height: 1.2;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.technique-tooltip {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-top: var(--space-2);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  color: var(--text-primary);
+  width: max-content;
+  max-width: 250px;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity var(--transition-fast);
+  pointer-events: none;
+  z-index: 30;
+}
+
+.technique-cell:hover .technique-tooltip {
+  opacity: 1;
+  visibility: visible;
+}
+
+.tooltip-title {
+  font-weight: 600;
+  margin-bottom: var(--space-1);
+  font-size: var(--font-size-sm);
+}
+
+.tooltip-stat {
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+}
+
+.tooltip-exploiters {
+  margin-top: var(--space-1);
+  font-size: var(--font-size-xs);
+  color: var(--color-primary);
+}
+
+.matrix-legend {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.legend-bar {
+  width: 200px;
+  height: 12px;
+  border-radius: var(--radius-full);
+  background: linear-gradient(to right, #3b82f6, #eab308, #ef4444);
+}
+
+.legend-label {
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+  font-weight: 500;
+}

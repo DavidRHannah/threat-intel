@@ -1,0 +1,90 @@
+.threat-feed {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: 600px;
+  padding: 0;
+}
+
+.threat-feed__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.threat-feed__title {
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.threat-feed__list {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.threat-feed__item {
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border-color-subtle);
+  transition: background-color var(--transition-fast);
+}
+
+.threat-feed__item:nth-child(even) {
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
+[data-theme='dark'] .threat-feed__item:nth-child(even) {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+.threat-feed__item:hover {
+  background-color: var(--bg-hover);
+}
+
+.threat-feed__item:last-child {
+  border-bottom: none;
+}
+
+.threat-feed__headline {
+  display: block;
+  font-weight: 600;
+  font-size: var(--font-size-md);
+  margin-bottom: var(--space-2);
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.threat-feed__headline:hover {
+  color: var(--color-primary);
+}
+
+.threat-feed__meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-size: var(--font-size-sm);
+}
+
+.threat-feed__articles {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-secondary);
+}
+
+.threat-feed__entities {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.threat-feed__time {
+  color: var(--text-tertiary);
+  margin-left: auto;
+}
