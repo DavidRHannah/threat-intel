@@ -24,6 +24,7 @@ htmlcov/
 
 /*-layer
 /docs
+!/docs/screenshots
 /plans
 /progress-reports
 /requirements
