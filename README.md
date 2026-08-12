@@ -2,7 +2,7 @@
 
 An open-source threat-intelligence platform.
 
-![Dashboard Preview](docs/screenshots/dashboard1.png)
+![Dashboard Preview](docs/screenshots/dashboard.png)
 
 Crossroads ingests security feeds and turns them into a queryable, scored threat graph:
 
