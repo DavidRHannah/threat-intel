@@ -3,6 +3,7 @@ import aws_cdk as cdk
 
 from infra.stacks.data_collection_stack import DataCollectionStack
 from infra.stacks.foundation_stack import FoundationStack
+from infra.stacks.interop_stack import InteropStack
 from infra.stacks.nlp_stack import NlpStack
 from infra.stacks.scoring_stack import ScoringStack
 
@@ -24,6 +25,12 @@ NlpStack(
 ScoringStack(
     app,
     f"CrossroadsScoring-{env_name}",
+    env_name=env_name,
+    foundation=foundation,
+)
+InteropStack(
+    app,
+    f"CrossroadsInterop-{env_name}",
     env_name=env_name,
     foundation=foundation,
 )

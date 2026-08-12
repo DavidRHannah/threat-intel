@@ -1,0 +1,22 @@
+# Interop (L5) knobs (technical-specification.md §7 pattern, per config/scoring.yaml).
+# Git is the single source of truth: InteropStack reads this at CDK synth time and emits
+# each key as a CROSSROADS_<KEY> Lambda environment variable, which
+# src/common/config.py resolves first.
+#
+# `export_confidence_floor` is a `# spike` value -- no empirical basis yet, same posture
+# as L4's uncalibrated knobs (technical-specification.md §11). It is DELIBERATELY a
+# separate knob from L4's `prune_confidence_floor` (config/scoring.yaml) -- export
+# gating and pruning are different concerns (interoperability-layer/design.md Part 5).
+
+export_confidence_floor: 0.3    # spike
+
+# Fixed UUIDv5 namespace for deterministic STIX ids (FR-IO-03). Generated once, must
+# never change -- changing it silently reassigns every object's STIX id, which every
+# TAXII consumer sees as every object disappearing and a brand-new one appearing.
+stix_namespace: "5a2c1f2e-6b8a-4b0a-9c3e-2f6a7d8e9b10"
+
+# The single collection this slice serves (design.md Part 4 / spec decision 2).
+collection_id: "883d0e40-1e0e-4e2b-9a7c-8e2f6c5a1d90"
+collection_title: "Crossroads Threat Intelligence"
+
+sweep_batch_size: 500

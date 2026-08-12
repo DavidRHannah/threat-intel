@@ -10,12 +10,12 @@ def test_stack_synthesizes_with_correct_env_name():
     assert stack.env_name == "dev"
 
 
-def test_creates_all_eight_dynamodb_tables():
+def test_creates_all_nine_dynamodb_tables():
     app = cdk.App()
     stack = FoundationStack(app, "TestStack", env_name="dev")
     template = Template.from_stack(stack)
 
-    template.resource_count_is("AWS::DynamoDB::Table", 8)
+    template.resource_count_is("AWS::DynamoDB::Table", 9)
     assert set(stack.tables.keys()) == {
         "Sources",
         "PollingState",
@@ -25,6 +25,7 @@ def test_creates_all_eight_dynamodb_tables():
         "AlertState",
         "BriefingArchive",
         "ReconciliationReviewQueue",
+        "RevokedStixIds",
     }
 
 
@@ -96,3 +97,17 @@ def test_exports_table_names_and_topic_arn_as_stack_outputs():
         assert f"{name}TableName" in outputs, f"no CfnOutput exporting the {name} table name"
     for output in outputs.values():
         assert output["Export"]["Name"].startswith("TestStack:"), output
+
+
+def test_revoked_stix_ids_table_exists():
+    app = cdk.App()
+    stack = FoundationStack(app, "TestStack", env_name="dev")
+    template = Template.from_stack(stack)
+
+    template.has_resource_properties(
+        "AWS::DynamoDB::Table",
+        {
+            "TableName": "crossroads-dev-revokedstixids",
+            "KeySchema": [{"AttributeName": "stix_id", "KeyType": "HASH"}],
+        },
+    )

@@ -27,12 +27,19 @@ from src.scoring.knobs import ConfidenceKnobs, RelevanceKnobs, SeverityKnobs
 from src.scoring.relevance import rescan_novelty_batch
 from src.scoring.severity import rescan_severity_batch
 
+# The one upward-layer import in this codebase (plans/05-interop.md Global Constraints):
+# reuses this module's existing paginated-sweep infra rather than duplicating a second
+# Step Function. Every other cross-layer interface here is message-based (SNS), not this.
+from src.interop.knobs import InteropKnobs
+from src.interop.withdrawal import revoke_batch
+
 PHASES: tuple[str, ...] = (
     "severity_rescan",
     "confidence_rescan",
     "novelty",
     "decay",
     "prune_flags",
+    "stix_withdrawal",
 )
 
 # `prune_flags` runs the node scan first, then the edge scan, distinguished by a prefix
@@ -107,6 +114,14 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 nxt = _EDGE_PHASE_PREFIX if nxt is None else nxt
             else:
                 nxt = None if nxt is None else _EDGE_PHASE_PREFIX + nxt
+        elif phase == "stix_withdrawal":
+            interop_knobs = InteropKnobs.from_config()
+            count, nxt = session.execute_write(
+                lambda tx: revoke_batch(
+                    tx, cursor=cursor, batch_size=batch_size,
+                    floor=interop_knobs.export_confidence_floor, now=now,
+                )
+            )
         else:
             raise ValueError(f"unknown sweep phase: {phase!r}")
 

@@ -33,6 +33,7 @@ from src.scoring.sweep_handler import PHASES as _SWEEP_PHASES
 # never the process CWD (see schema_bootstrap_job.py's note).
 _REPO_ROOT = str(Path(__file__).resolve().parents[2])
 _SCORING_YAML = str(Path(_REPO_ROOT) / "config" / "scoring.yaml")
+_INTEROP_YAML = str(Path(_REPO_ROOT) / "config" / "interop.yaml")
 
 # Paths whose churn must NOT invalidate an asset hash -- same list as nlp_stack.py /
 # data_collection_stack.py / schema_bootstrap_job.py.
@@ -81,6 +82,18 @@ _REQUIRED_KNOBS = (
 # The sweep phase list is deliberately NOT restated here -- it is imported as
 # `_SWEEP_PHASES` from src.scoring.sweep_handler at the top of this module.
 
+# The `stix_withdrawal` sweep phase calls `InteropKnobs.from_config()` (src/interop/
+# knobs.py), which reads every field of the dataclass, not just the `export_confidence_
+# floor` the phase itself uses. Mirrors InteropStack's own `_REQUIRED_KNOBS`/`_knob_env`
+# (infra/stacks/interop_stack.py) -- baking these in as env vars means `get_config()`
+# (src/common/config.py) resolves them from `os.environ` before ever calling SSM, so the
+# sweep Lambda needs no SSM grant for them and cannot AccessDeny on a param it was never
+# granted.
+_INTEROP_REQUIRED_KNOBS = (
+    "export_confidence_floor", "stix_namespace", "collection_id", "collection_title",
+    "sweep_batch_size",
+)
+
 
 def _knob_env() -> dict[str, str]:
     with open(_SCORING_YAML) as fh:
@@ -89,6 +102,15 @@ def _knob_env() -> dict[str, str]:
     if missing:
         raise ValueError(f"missing required scoring knob(s) in {_SCORING_YAML}: {missing}")
     return {f"CROSSROADS_{k.upper()}": str(knobs[k]) for k in _REQUIRED_KNOBS}
+
+
+def _interop_knob_env() -> dict[str, str]:
+    with open(_INTEROP_YAML) as fh:
+        knobs = yaml.safe_load(fh) or {}
+    missing = [k for k in _INTEROP_REQUIRED_KNOBS if k not in knobs]
+    if missing:
+        raise ValueError(f"missing required interop knob(s) in {_INTEROP_YAML}: {missing}")
+    return {f"CROSSROADS_{k.upper()}": str(knobs[k]) for k in _INTEROP_REQUIRED_KNOBS}
 
 
 def _bundled_code() -> _lambda.Code:
@@ -168,7 +190,10 @@ class ScoringStack(Stack):
             code=code,
             timeout=Duration.minutes(5),
             memory_size=1024,
-            environment=env,
+            # `sweep_batch_size` exists in BOTH yamls under the same env var name --
+            # scoring's is the one `_batch_size()` (sweep_handler.py) actually reads for
+            # every phase including `stix_withdrawal`, so it must win the collision.
+            environment={**_interop_knob_env(), **env},
         )
         grant_ssm_read(
             self, self.sweep_fn.role, env_name=env_name, param_names=_NEO4J_SSM_PARAMS

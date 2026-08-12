@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import boto3
 import pytest
 from moto import mock_aws
@@ -155,3 +157,48 @@ def test_reconcile_unrelated_provisional_is_left_alone(driver, review_queue_tabl
             "MATCH (p:Provisional {merge_key: 'completely different actor'}) RETURN count(p) AS c"
         ).single()["c"]
         assert provisional_count == 1
+
+
+@patch("src.nlp.resolution.reconciliation.publish_node_merge")
+def test_merge_of_exported_provisional_publishes_node_merge(mock_publish, driver):
+    with driver.session() as s:
+        s.run(
+            "MERGE (c:ThreatActor {merge_key: 'G1015'}) "
+            "SET c.test_fixture = true, c.mitre_id = 'G1015', c.name = 'Scattered Spider', "
+            "c.aliases = ['Scattered Spider']"
+        ).consume()
+        s.run(
+            "MERGE (p:ThreatActor:Provisional {merge_key: 'scattered spider'}) "
+            "SET p.test_fixture = true, p.name = 'Scattered Spider', "
+            "p.aliases = ['Scattered Spider'], p.mitre_id = null, p.confidence = 0.8, "
+            "p.exported = true"
+        ).consume()
+
+    result = reconcile(driver, canonical_merge_key="G1015", canonical_label="ThreatActor")
+
+    assert result.merged is True
+    mock_publish.assert_called_once_with(
+        label="ThreatActor",
+        old_key={"merge_key": "scattered spider"},
+        new_key={"merge_key": "G1015"},
+    )
+
+
+@patch("src.nlp.resolution.reconciliation.publish_node_merge")
+def test_merge_of_never_exported_provisional_publishes_nothing(mock_publish, driver):
+    with driver.session() as s:
+        s.run(
+            "MERGE (c:ThreatActor {merge_key: 'G1015'}) "
+            "SET c.test_fixture = true, c.mitre_id = 'G1015', c.name = 'Scattered Spider', "
+            "c.aliases = ['Scattered Spider']"
+        ).consume()
+        s.run(
+            "MERGE (p:ThreatActor:Provisional {merge_key: 'scattered spider'}) "
+            "SET p.test_fixture = true, p.name = 'Scattered Spider', "
+            "p.aliases = ['Scattered Spider'], p.mitre_id = null, p.confidence = 0.8"
+            # no `exported` property at all
+        ).consume()
+
+    reconcile(driver, canonical_merge_key="G1015", canonical_label="ThreatActor")
+
+    mock_publish.assert_not_called()

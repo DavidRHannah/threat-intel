@@ -21,6 +21,7 @@ from src.common.config import get_config
 MESSAGE_TYPE_ARTICLE = "article"
 MESSAGE_TYPE_EDGE_WRITE = "edge_write"
 MESSAGE_TYPE_NODE_WRITE = "node_write"
+MESSAGE_TYPE_NODE_MERGE = "node_merge"
 
 
 def message_attributes(message_type: str) -> dict:
@@ -111,6 +112,39 @@ def publish_node_write(
                 # Coerced: a set is a legal argument above but is not JSON-serializable.
                 "changed_fields": list(changed_fields),
                 "origin": origin,
+            }
+        ),
+    )
+
+
+def publish_node_merge(
+    *, label: str, old_key: dict, new_key: dict, event_time: datetime | None = None,
+) -> None:
+    """Announce a reconciliation merge (FR-IO-09, interoperability-layer/design.md Part 5).
+
+    `old_key` identifies the deleted `:Provisional` node; `new_key` the canonical node it
+    merged into. L5's watermark_handler.py is the only subscriber: it derives the old
+    node's STIX id from `old_key` and tombstones it if it had ever been exported. This
+    message exists BECAUSE the merge deletes the provisional node synchronously
+    (src/nlp/resolution/reconciliation.py) -- there is no later point to detect this from
+    outside the merge transaction, so the caller publishes only when it already knows the
+    node was exported (see reconciliation.py's `was_exported` check) to avoid announcing
+    every ordinary reconciliation merge to a topic that otherwise carries only
+    scoring-relevant events.
+    """
+    topic_arn = get_config("graph_writes_topic_arn")
+    sns = boto3.client("sns")
+    at = event_time if event_time is not None else datetime.now(timezone.utc)
+    sns.publish(
+        TopicArn=topic_arn,
+        MessageAttributes=message_attributes(MESSAGE_TYPE_NODE_MERGE),
+        Message=json.dumps(
+            {
+                "message_type": MESSAGE_TYPE_NODE_MERGE,
+                "label": label,
+                "old_key": old_key,
+                "new_key": new_key,
+                "event_time": at.isoformat(),
             }
         ),
     )

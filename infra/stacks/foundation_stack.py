@@ -19,6 +19,7 @@ _TABLE_SPECS: dict[str, dict[str, str]] = {
         "partition_key": "provisional_merge_key",
         "sort_key": "candidate_merge_key",
     },
+    "RevokedStixIds": {"partition_key": "stix_id"},
 }
 
 

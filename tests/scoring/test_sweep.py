@@ -956,3 +956,29 @@ def test_running_the_whole_sweep_twice_does_not_accumulate(driver):
 def test_unknown_phase_raises(driver):
     with pytest.raises(ValueError, match="unknown sweep phase"):
         handler({"phase": "nonsense", "cursor": None}, None)
+
+
+def test_phases_ends_with_stix_withdrawal():
+    assert PHASES[-1] == "stix_withdrawal"
+
+
+def test_stix_withdrawal_phase_revokes_gated_out_exported_node(driver):
+    """A single call is not guaranteed to report done for a one-node page -- the
+    established convention in this file (rescan_severity_batch, and every other
+    single-fixture test here) is that `next_cursor` is the last scanned id even on a
+    partial page, and `done` only comes from a following EMPTY page. `revoke_batch`
+    (Task 3.1) follows that same convention -- see its own test suite, which never
+    asserts done/cursor-is-None for a single-node page either. Drive it to exhaustion
+    like every other phase test does, rather than assuming a stronger single-call
+    contract than Task 3.1 actually implements."""
+    with driver.session() as session:
+        session.run(
+            "CREATE (:CVE {cve_id: 'CVE-2026-1', confidence: 0.05, exported: true, "
+            "test_fixture: true})"
+        )
+
+    total, _pages, last = _drain("stix_withdrawal")
+
+    assert last["phase"] == "stix_withdrawal"
+    assert last["done"] is True
+    assert total == 1

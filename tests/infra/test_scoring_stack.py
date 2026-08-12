@@ -190,6 +190,42 @@ def test_both_lambdas_get_neo4j_ssm_read_but_no_sns_publish():
         )
 
 
+def test_sweep_lambda_gets_interop_knobs_for_the_withdrawal_phase():
+    """The `stix_withdrawal` phase calls `InteropKnobs.from_config()`, which reads every
+    field of the dataclass -- not just `export_confidence_floor`, the one the phase uses.
+    `get_config()` checks `os.environ` before SSM, so baking these in as env vars (same
+    convention as InteropStack's own Lambdas) avoids a synth-time SSM grant AND an
+    AccessDenied at 2am in dev/prod, where SSM is hit unconditionally for anything not in
+    the environment. Missing even one of the five means AccessDenied on that one field."""
+    stack, template = _synth()
+    env = _environment_of(stack, template, stack.sweep_fn)
+    for knob in ("export_confidence_floor", "stix_namespace", "collection_id",
+                 "collection_title", "sweep_batch_size"):
+        assert f"CROSSROADS_{knob.upper()}" in env, f"sweep_fn is missing interop knob {knob}"
+
+
+def test_sweep_batch_size_collision_favors_the_scoring_yaml():
+    """`sweep_batch_size` is defined in BOTH config/scoring.yaml and config/interop.yaml
+    under the same CROSSROADS_SWEEP_BATCH_SIZE env var -- but only the scoring one is
+    live: `_batch_size()` in sweep_handler.py reads it for every phase, including
+    `stix_withdrawal`. If interop's value won the merge, every sweep phase would
+    silently start paginating at interop's batch size instead of the tuned scoring one."""
+    stack, template = _synth()
+    env = _environment_of(stack, template, stack.sweep_fn)
+    with open("config/scoring.yaml") as fh:
+        scoring_value = str(yaml.safe_load(fh)["sweep_batch_size"])
+    assert env["CROSSROADS_SWEEP_BATCH_SIZE"] == scoring_value
+
+
+def test_event_lambda_does_not_get_interop_knobs():
+    """The event handler never touches InteropKnobs -- only the sweep's stix_withdrawal
+    phase does. Baking them onto both would work but silently hide a wiring mistake if
+    interop knobs were ever added to the wrong Lambda."""
+    stack, template = _synth()
+    env = _environment_of(stack, template, stack.event_fn)
+    assert "CROSSROADS_EXPORT_CONFIDENCE_FLOOR" not in env
+
+
 def test_state_machine_runs_every_phase_the_handler_declares():
     """Drives off the handler's own PHASES, NOT a literal list. A restated list silently
     goes stale the moment a phase is added -- `confidence_rescan` was added in Task 5.1

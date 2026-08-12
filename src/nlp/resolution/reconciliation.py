@@ -33,6 +33,7 @@ import boto3
 from neo4j import Driver
 
 from src.common.config import get_config
+from src.common.graph.publish import publish_node_merge
 
 # Below this ratio a provisional is considered unrelated to the canonical
 # entity and is left alone (no merge, no review-queue row) -- otherwise every
@@ -78,26 +79,30 @@ def _fetch_provisionals(tx, canonical_label: str) -> list[dict]:
 def _merge_provisional_into_canonical(
     tx, *, canonical_label: str, canonical_merge_key: str, provisional_merge_key: str,
     provisional_name: str,
-) -> None:
-    tx.run(
+) -> bool:
+    record = tx.run(
         f"""
         MATCH (p:{canonical_label}:Provisional {{merge_key: $provisional_key}}),
               (c:{canonical_label} {{merge_key: $canonical_key}})
         WITH p, c,
              CASE WHEN elementId(p) <= elementId(c) THEN [p, c] ELSE [c, p] END AS ordered
         CALL apoc.lock.nodes(ordered)
-        WITH p, c
+        WITH c, p
+        MATCH (p2) WHERE elementId(p2) = elementId(p)
+        WITH c, p, coalesce(p2.exported, false) AS was_exported
         CALL apoc.refactor.mergeNodes([c, p], {{properties: "discard", mergeRels: true}})
         YIELD node
         SET node.aliases = CASE
             WHEN $provisional_name IN coalesce(node.aliases, []) THEN node.aliases
             ELSE coalesce(node.aliases, []) + [$provisional_name]
         END
+        RETURN was_exported
         """,
         provisional_key=provisional_merge_key,
         canonical_key=canonical_merge_key,
         provisional_name=provisional_name,
-    ).consume()
+    ).single()
+    return bool(record["was_exported"])
 
 
 def _queue_for_review(provisional_merge_key: str, canonical_merge_key: str) -> None:
@@ -136,7 +141,7 @@ def reconcile(driver: Driver, canonical_merge_key: str, canonical_label: str) ->
 
         if normalized_provisional in canonical_aliases_normalized:
             with driver.session() as session:
-                session.execute_write(
+                was_exported = session.execute_write(
                     _merge_provisional_into_canonical,
                     canonical_label=canonical_label,
                     canonical_merge_key=canonical_merge_key,
@@ -144,6 +149,14 @@ def reconcile(driver: Driver, canonical_merge_key: str, canonical_label: str) ->
                     provisional_name=provisional["name"] or provisional_key,
                 )
             merged_keys.append(provisional_key)
+            if was_exported:
+                # Published AFTER the transaction commits, same convention as every
+                # other graph-writes publisher in this codebase (publish.py docstring).
+                publish_node_merge(
+                    label=canonical_label,
+                    old_key={"merge_key": provisional_key},
+                    new_key={"merge_key": canonical_merge_key},
+                )
             continue
 
         best_ratio = max(
