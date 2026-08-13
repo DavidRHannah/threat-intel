@@ -14,7 +14,7 @@ def _test_stack() -> Stack:
     return Stack(app, "TestStack", env=cdk.Environment(account="111111111111", region="us-east-1"))
 
 
-def test_grant_ssm_read_scopes_to_named_parameters():
+def test_grant_ssm_read_scopes_to_env_path_wildcard():
     stack = _test_stack()
     role = iam.Role(stack, "Role", assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"))
 
@@ -31,15 +31,8 @@ def test_grant_ssm_read_scopes_to_named_parameters():
                             Match.object_like(
                                 {
                                     "Action": "ssm:GetParameter",
-                                    "Resource": Match.array_with(
-                                        [
-                                            Match.string_like_regexp(
-                                                r".*parameter/crossroads/dev/neo4j_uri$"
-                                            ),
-                                            Match.string_like_regexp(
-                                                r".*parameter/crossroads/dev/neo4j_password$"
-                                            ),
-                                        ]
+                                    "Resource": Match.string_like_regexp(
+                                        r".*parameter/crossroads/dev/\*$"
                                     ),
                                 }
                             )

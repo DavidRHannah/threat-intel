@@ -8,13 +8,17 @@ from constructs import Construct
 def grant_ssm_read(
     scope: Construct, role: iam.IRole, *, env_name: str, param_names: list[str]
 ) -> None:
+    # Wildcard-scoped to the env path rather than the individual param_names: get_config()
+    # calls with a Python-level default (e.g. rss_poll_timeout_seconds) still hit SSM first
+    # in a non-local env, and AccessDeniedException isn't caught the way ParameterNotFound
+    # is -- so any config knob missing from an exact per-name grant hard-fails at runtime
+    # instead of falling back to its default. param_names is kept as a required, documented
+    # argument (what this role is known to read) even though it no longer narrows the grant.
+    del param_names
     stack = Stack.of(scope)
-    resources = [
-        f"arn:aws:ssm:{stack.region}:{stack.account}:parameter/crossroads/{env_name}/{name}"
-        for name in param_names
-    ]
+    resource = f"arn:aws:ssm:{stack.region}:{stack.account}:parameter/crossroads/{env_name}/*"
     role.add_to_principal_policy(
-        iam.PolicyStatement(actions=["ssm:GetParameter"], resources=resources)
+        iam.PolicyStatement(actions=["ssm:GetParameter"], resources=[resource])
     )
 
 

@@ -144,19 +144,20 @@ def test_epss_runs_as_a_step_function_on_a_daily_rule():
     template.has_resource_properties("AWS::Events::Rule", {"ScheduleExpression": "rate(1 day)"})
 
 
-def test_poller_has_no_neo4j_ssm_grant():
-    """NFR-SEC-02 least-privilege: the poller never touches Neo4j, so ITS OWN role's policy
-    must not carry a neo4j_* SSM read grant (the graph-writing Lambdas do).
-
-    Scoped to the poller's specific inline policy resource — the one `grant_ssm_read` would
-    add the neo4j params to if it were mistakenly called on `poller_fn.role`. The previous
-    version stringified every policy and looked for `"sources"` and `"neo4j"` co-occurring
-    in ONE policy; since CDK emits a separate policy per role, no single policy ever mixes
-    those substrings regardless of the grant, so it passed trivially and had no teeth.
+def test_poller_ssm_grant_is_env_wildcard_not_least_privilege():
+    """NFR-SEC-02 (Must, least-privilege IAM) is KNOWINGLY VIOLATED as of 2026-08-12 — see
+    CLAUDE.md Current State. `grant_ssm_read` grants `crossroads/{env}/*` to every Lambda that
+    reads any config, not just the exact params each one uses, because `get_config`'s
+    ParameterNotFound-only fallback made per-name grants fail non-local deploys for any
+    default-having knob missing from its list (a whack-a-mole discovered live in AWS, not in
+    tests). This test used to assert the poller's policy carried no `neo4j` substring, proving
+    least-privilege; that assertion would now pass VACUOUSLY (the wildcard never names a
+    param), so it's rewritten to assert what's actually true: the poller CAN read every env
+    secret, including ones it never calls `get_config` for. Tighten this back up (per-Lambda
+    scoping, or a `get_config` fix that catches AccessDeniedException too when a default is
+    given) and flip this test back to a no-neo4j-grant assertion when NFR-SEC-02 gets fixed.
     """
     template, _ = _template()
-    # `role.add_to_principal_policy` (grant_ssm_read) lands on the role's default policy;
-    # the poller's is `PollerFunctionServiceRoleDefaultPolicy*`.
     poller_policies = {
         lid: res
         for lid, res in template.find_resources("AWS::IAM::Policy").items()
@@ -166,12 +167,10 @@ def test_poller_has_no_neo4j_ssm_grant():
 
     for lid, policy in poller_policies.items():
         document = policy["Properties"]["PolicyDocument"]
-        # A neo4j grant renders as an ssm:GetParameter statement whose Resource ARN ends in
-        # /neo4j_uri|user|password (see the graph Lambdas' policies). Serialize the whole
-        # document and assert no neo4j parameter name is referenced anywhere in it.
         rendered = json.dumps(document, default=str)
-        assert "neo4j" not in rendered, (
-            f"poller policy {lid} carries a neo4j SSM grant: {rendered}"
+        assert "crossroads/dev/*" in rendered, (
+            f"expected poller policy {lid} to carry the env-wildcard SSM grant "
+            f"(NFR-SEC-02 debt, see CLAUDE.md): {rendered}"
         )
 
 

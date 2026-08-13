@@ -98,3 +98,64 @@ def test_refresh_updates_existing_cve_only_never_creates(driver):
 
     # Refresh returns the count of CVEs updated.
     assert count == 1
+
+
+def test_refresh_batches_writes_instead_of_one_call_per_row(driver, monkeypatch):
+    """Regression for a real production bug: the EPSS Step Function always failed with
+    Sandbox.Timedout (confirmed live, 2026-08-13 -- only 3/1675 CVEs got scored in a
+    300s Lambda run) because the original implementation issued one session.run() per
+    CSV row, and the real bulk file has ~200k rows. `refresh_epss_scores` must batch
+    its writes (UNWIND per chunk) so the round-trip count is bounded by
+    ceil(rows/batch_size), not rows.
+
+    Forces batch_size=2 across 5 rows (3 matching CVEs spanning a batch boundary, 2
+    non-matching) to prove both: (a) matches still land correctly across the
+    boundary, and (b) the actual number of session.run() calls is batched.
+    """
+    with driver.session() as s:
+        s.run(
+            "MERGE (a:CVE {cve_id:'CVE-2026-3001'}) SET a.test_fixture = true "
+            "MERGE (b:CVE {cve_id:'CVE-2026-3002'}) SET b.test_fixture = true"
+        ).consume()
+
+    csv = (
+        "cve,epss\n"
+        "CVE-2026-1001,0.11\n"  # matches (pre-created by the `driver` fixture)
+        "CVE-2026-3001,0.22\n"  # matches
+        "CVE-2026-9001,0.33\n"  # no match
+        "CVE-2026-3002,0.44\n"  # matches
+        "CVE-2026-9002,0.55\n"  # no match
+    )
+
+    call_count = 0
+    real_session = driver.session
+
+    class _CountingSession:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __enter__(self):
+            self._session = self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._inner.__exit__(*exc_info)
+
+        def run(self, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return self._session.run(*args, **kwargs)
+
+    monkeypatch.setattr(driver, "session", lambda *a, **k: _CountingSession(real_session(*a, **k)))
+
+    count = refresh_epss_scores(driver, lambda: csv, batch_size=2)
+    # ceil(5 rows / batch_size=2) == 3 round trips, not 5 -- this is the actual fix.
+    # Captured immediately after refresh returns, before any verification reads
+    # (which also go through the patched driver.session and would inflate this).
+    assert call_count == 3
+
+    assert count == 3
+    monkeypatch.setattr(driver, "session", real_session)
+    assert _cve_epss(driver, "CVE-2026-1001") == 0.11
+    assert _cve_epss(driver, "CVE-2026-3001") == 0.22
+    assert _cve_epss(driver, "CVE-2026-3002") == 0.44

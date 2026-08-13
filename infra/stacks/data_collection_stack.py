@@ -155,7 +155,8 @@ class DataCollectionStack(Stack):
             code=_bundled_code(("feedparser==6.0.11", "httpx==0.28.1")),
             timeout=Duration.minutes(5),
             memory_size=256,
-            # FR-DC-07: at most one poller invocation at a time.
+            # FR-DC-07: at most one poller invocation at a time. Restored 2026-08-12 —
+            # the account's Lambda concurrency quota increase (10 -> 1000) landed.
             reserved_concurrent_executions=1,
             environment={
                 "CROSSROADS_ENV": env_name,
