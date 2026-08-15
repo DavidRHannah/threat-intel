@@ -81,6 +81,84 @@ def upsert_authoritative_assertion(
     )
 
 
+def upsert_authoritative_assertions_bulk(
+    tx, *, start_label: str, start_key_prop: str, end_label: str, end_key_prop: str,
+    rel_type: str, rows: list[dict], feed_source: str, credibility_score: float, now: datetime,
+) -> dict:
+    """Batched equivalent of `upsert_authoritative_assertion` for many edges that share
+    one (start_label, end_label, rel_type, feed_source, credibility_score) -- one UNWIND
+    round trip instead of one `execute_write` per edge.
+
+    Regression fix: the MITRE ATT&CK sync called `upsert_authoritative_assertion` once
+    per relationship (~25k for enterprise-attack alone) against remote AuraDB and never
+    finished inside the Lambda timeout -- confirmed live across three consecutive 600s
+    runs with zero new edges written (see CLAUDE.md Current State). This is the same
+    one-round-trip-per-row shape as the EPSS bug fixed in `refresh_epss_scores`.
+
+    `start_label`/`end_label` fix the node schema for every row in the batch, so unlike
+    `upsert_authoritative_assertion` this takes each key as a single scalar
+    (`start_key_prop`/`end_key_prop` name the property once) rather than a per-row key
+    dict -- every current caller (TTP.technique_id, ThreatActor/MalwareFamily/
+    Campaign.merge_key) already uses a single-property natural key, so this isn't a
+    narrowing of what's actually supported.
+
+    Avoids the two-round-trip read-then-write shape `upsert_authoritative_assertion`
+    uses (a separate `_existing` read, needed because that function computes the new
+    origin/feed_sources/confidence values in Python from a stale read): here the same
+    math is expressed as Cypher CASE expressions evaluated against the relationship's
+    live value inside the ONE write statement, so there is no separate read round trip
+    to go stale between. `apoc.lock.nodes` is still taken per row (re-entrant with the
+    MERGE's own lock) purely for defense in depth / consistency with the rest of this
+    module -- not because a second round trip exists here to race against.
+    """
+    validate_edge_direction(rel_type, end_label=end_label)
+    _check_identifier(start_label, "start_label")
+    _check_identifier(start_key_prop, "start key property")
+    _check_identifier(end_label, "end_label")
+    _check_identifier(end_key_prop, "end key property")
+    _check_identifier(rel_type, "rel_type")
+
+    if not rows:
+        return {"processed": 0, "created": 0}
+
+    query = f"""
+    UNWIND $rows AS row
+    MATCH (a:{start_label} {{{start_key_prop}: row.start_key}}),
+          (b:{end_label} {{{end_key_prop}: row.end_key}})
+    WITH a, b, CASE WHEN elementId(a) <= elementId(b) THEN [a, b] ELSE [b, a] END AS ordered
+    CALL apoc.lock.nodes(ordered)
+    WITH a, b
+    MERGE (a)-[r:{rel_type}]->(b)
+    ON CREATE SET r.first_observed = $now
+    WITH r
+    SET r.last_confirmed = $now,
+        r.authoritative_confidence = CASE
+            WHEN $credibility_score > coalesce(r.authoritative_confidence, 0.0)
+            THEN $credibility_score ELSE r.authoritative_confidence END,
+        r.origin = CASE
+            WHEN NOT 'authoritative' IN coalesce(r.origin, [])
+            THEN coalesce(r.origin, []) + 'authoritative' ELSE r.origin END,
+        r.feed_sources = CASE
+            WHEN NOT $feed_source IN coalesce(r.feed_sources, [])
+            THEN coalesce(r.feed_sources, []) + $feed_source ELSE r.feed_sources END
+    WITH r
+    SET r.confidence = CASE
+        WHEN r.authoritative_confidence > coalesce(r.inferred_confidence, 0.0)
+        THEN r.authoritative_confidence ELSE r.inferred_confidence END
+    RETURN count(r) AS processed
+    """
+    result = tx.run(
+        query, rows=rows, now=now,
+        credibility_score=credibility_score, feed_source=feed_source,
+    )
+    record = result.single()
+    summary = result.consume()
+    return {
+        "processed": record["processed"] if record else 0,
+        "created": summary.counters.relationships_created,
+    }
+
+
 def upsert_inferred_assertion(
     tx, *, start_label, start_key, end_label, end_key, rel_type,
     story_cluster_id: str, contribution: float, source_article_ids: list[str],

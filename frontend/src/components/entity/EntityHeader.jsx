@@ -1,9 +1,14 @@
 import React from 'react';
+import ReactMarkdown from 'react-markdown';
 import { EntityBadge } from '../common/EntityBadge';
 import { SeverityBadge } from '../common/SeverityBadge';
 import { ScoreBar } from '../common/ScoreBar';
-import { getEntityType } from '../../utils/formatters';
+import { getEntityType, stripCitations } from '../../utils/formatters';
 import './EntityHeader.css';
+
+const descriptionLinkRenderer = ({ href, children }) => (
+  <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
+);
 
 export function EntityHeader({ entity }) {
   if (!entity) return null;
@@ -33,7 +38,13 @@ export function EntityHeader({ entity }) {
             {entity.aliases && ` | Aliases: ${entity.aliases.join(', ')}`}
           </div>
         )}
-        <p className="entity-description">{entity.description}</p>
+        {entity.description && (
+          <div className="entity-description">
+            <ReactMarkdown components={{ a: descriptionLinkRenderer }}>
+              {stripCitations(entity.description)}
+            </ReactMarkdown>
+          </div>
+        )}
       </div>
 
       <div className="entity-scores-row">

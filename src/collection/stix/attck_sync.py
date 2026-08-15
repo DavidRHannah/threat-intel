@@ -35,7 +35,7 @@ return already-JSON-decoded dicts.
 endpoint-locked" -- that predates `src.common.graph`'s write library (L3, now built) and
 is superseded by it here. `USES` and `ATTRIBUTED_TO` are both **assertion** edges per
 `technical-specification.md` §3.2, written via
-`src.common.graph.assertion_edges.upsert_authoritative_assertion` inside
+`src.common.graph.assertion_edges.upsert_authoritative_assertions_bulk` inside
 `session.execute_write(...)` (never a bare session call -- that's how L3 avoids the
 lost-update race a per-task review on the graph-writes branch already found and fixed).
 `feed_source="mitre_attck"`, `credibility_score=1.0`: a judgment call, documented like
@@ -47,9 +47,18 @@ against), consistent with Category C owning `Campaign` seed data outright. No
 assertions, which feed L4 scoring off freshly-observed IOC activity) -- if that is wrong,
 it should be corrected in the plan alongside the code, not silently added here.
 
-Node MERGEs (the four object types themselves) stay direct Neo4j `MERGE`/`SET`: L3 ships
-only edge-writers, no node-writer, the same pattern Tasks 8/9 already established for
-`CVE`/`MalwareFamily`.
+**Batching (fixes a real production bug, 2026-08-15):** both node and edge writes go
+through Neo4j one `UNWIND` round trip per batch (`attck_batch_size` config knob, default
+500) instead of one `execute_write` per object/relationship. Confirmed live that the
+per-relationship shape could not finish `enterprise-attack`'s ~25k relationships inside
+the Lambda timeout -- three consecutive 600s runs made zero forward progress (see
+CLAUDE.md Current State). Edges are grouped by (start_label, end_label, rel_type) before
+batching, since labels/relationship types can't be parameterized in Cypher and must be
+interpolated once per group rather than per row.
+
+Node MERGEs (the four object types themselves) stay direct Neo4j `MERGE`/`SET`, batched
+the same way: L3 ships only edge-writers, no node-writer, the same pattern Tasks 8/9
+already established for `CVE`/`MalwareFamily`.
 
 **`merge_key` / `technique_id` computation** (`technical-specification.md` §3.2, Cross-
 Cutting Notes): `TTP` is keyed directly on `technique_id` (the object's own MITRE ID,
@@ -64,17 +73,22 @@ fallback is a defensive edge case, not the common path.
 FR-DC-26, FR-DC-27, FR-DC-28, FR-DC-01 (TTP, ThreatActor, MalwareFamily, Campaign).
 """
 
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
 import stix2
 
-from src.common.graph.assertion_edges import upsert_authoritative_assertion
+from src.common.config import get_config
+from src.common.graph.assertion_edges import upsert_authoritative_assertions_bulk
+from src.common.graph.writer import _check_identifier
 
 FEED_SOURCE = "mitre_attck"
 CREDIBILITY_SCORE = 1.0
 
 DOMAINS = ("enterprise-attack", "mobile-attack", "ics-attack")
+
+_DEFAULT_BATCH_SIZE = 500
 
 _USES_SOURCE_TYPES = {"intrusion-set", "malware", "campaign"}
 _USES_TARGET_TYPES = {"malware", "attack-pattern"}
@@ -185,108 +199,109 @@ def _campaign_properties(obj: Any) -> dict:
     }
 
 
-def _merge_ttp_tx(tx, technique_id: str, properties: dict) -> None:
+def _bulk_merge_nodes_tx(tx, label: str, key_prop: str, rows: list[dict]) -> None:
+    """rows: [{"key": <natural key value>, "props": {...}}]. One UNWIND round trip for
+    the whole batch instead of one `execute_write` per node -- see module docstring."""
+    _check_identifier(label, "label")
+    _check_identifier(key_prop, "key property")
     tx.run(
-        "MERGE (t:TTP {technique_id: $key}) SET t += $props",
-        key=technique_id, props=properties,
+        f"UNWIND $rows AS row MERGE (n:{label} {{{key_prop}: row.key}}) SET n += row.props",
+        rows=rows,
     ).consume()
 
 
-def _merge_threat_actor_tx(tx, merge_key: str, properties: dict) -> None:
-    tx.run(
-        "MERGE (a:ThreatActor {merge_key: $key}) SET a += $props",
-        key=merge_key, props=properties,
-    ).consume()
+def _batches(rows: list, batch_size: int):
+    for i in range(0, len(rows), batch_size):
+        yield rows[i : i + batch_size]
 
 
-def _merge_malware_family_tx(tx, merge_key: str, properties: dict) -> None:
-    tx.run(
-        "MERGE (m:MalwareFamily {merge_key: $key}) SET m += $props",
-        key=merge_key, props=properties,
-    ).consume()
+def _sync_domain_bundle(
+    driver, domain: str, bundle_raw: dict, *, now: datetime, batch_size: int | None = None
+) -> None:
+    if batch_size is None:
+        batch_size = int(get_config("attck_batch_size", default=str(_DEFAULT_BATCH_SIZE)))
 
-
-def _merge_campaign_tx(tx, merge_key: str, properties: dict) -> None:
-    tx.run(
-        "MERGE (c:Campaign {merge_key: $key}) SET c += $props",
-        key=merge_key, props=properties,
-    ).consume()
-
-
-def _write_edge_tx(tx, *, start_label, start_key, end_label, end_key, rel_type, now) -> str:
-    return upsert_authoritative_assertion(
-        tx,
-        start_label=start_label,
-        start_key=start_key,
-        end_label=end_label,
-        end_key=end_key,
-        rel_type=rel_type,
-        feed_source=FEED_SOURCE,
-        credibility_score=CREDIBILITY_SCORE,
-        now=now,
-    )
-
-
-def _sync_domain_bundle(driver, domain: str, bundle_raw: dict, *, now: datetime) -> None:
     parsed = stix2.parse(bundle_raw, allow_custom=True)
 
-    # Maps a STIX object id (e.g. "intrusion-set--...") to the (label, natural-key dict)
-    # a relationship endpoint resolves to, so the second (edge) pass never has to
-    # re-walk or re-parse the node objects.
-    id_to_endpoint: dict[str, tuple[str, dict]] = {}
-    node_writes: list[tuple[Any, str, dict]] = []  # (tx_fn, key, properties)
+    # Maps a STIX object id (e.g. "intrusion-set--...") to the (label, key_prop,
+    # key_value) a relationship endpoint resolves to, so the second (edge) pass never
+    # has to re-walk or re-parse the node objects.
+    id_to_endpoint: dict[str, tuple[str, str, str]] = {}
+    # Grouped by (label, key_prop): labels/property names can't be parameterized in
+    # Cypher, so each group is interpolated once and its rows batched via UNWIND.
+    node_groups: dict[tuple[str, str], list[dict]] = {}
     relationships: list[Any] = []
 
     for obj in parsed.objects:
-        if obj.type == "attack-pattern":
+        # stix2 returns unrecognised types (ATT&CK's own x-mitre-tactic, x-mitre-matrix,
+        # x-mitre-data-source, ...) as plain dicts rather than parsed objects, so this
+        # cannot be `obj.type`. Everything acted on below is a standard STIX type and
+        # therefore always a real object; the dicts fall through and are skipped.
+        obj_type = obj["type"] if isinstance(obj, dict) else obj.type
+        if obj_type == "attack-pattern":
             technique_id, properties = _ttp_properties(obj, domain)
-            id_to_endpoint[obj.id] = ("TTP", {"technique_id": technique_id})
-            node_writes.append((_merge_ttp_tx, technique_id, properties))
-        elif obj.type == "intrusion-set":
+            id_to_endpoint[obj.id] = ("TTP", "technique_id", technique_id)
+            node_groups.setdefault(("TTP", "technique_id"), []).append(
+                {"key": technique_id, "props": properties}
+            )
+        elif obj_type == "intrusion-set":
             merge_key = _merge_key(obj)
-            id_to_endpoint[obj.id] = ("ThreatActor", {"merge_key": merge_key})
-            node_writes.append((_merge_threat_actor_tx, merge_key, _threat_actor_properties(obj)))
-        elif obj.type == "malware":
+            id_to_endpoint[obj.id] = ("ThreatActor", "merge_key", merge_key)
+            node_groups.setdefault(("ThreatActor", "merge_key"), []).append(
+                {"key": merge_key, "props": _threat_actor_properties(obj)}
+            )
+        elif obj_type == "malware":
             merge_key = _merge_key(obj)
-            id_to_endpoint[obj.id] = ("MalwareFamily", {"merge_key": merge_key})
-            node_writes.append((_merge_malware_family_tx, merge_key, _malware_family_properties(obj)))
-        elif obj.type == "campaign":
+            id_to_endpoint[obj.id] = ("MalwareFamily", "merge_key", merge_key)
+            node_groups.setdefault(("MalwareFamily", "merge_key"), []).append(
+                {"key": merge_key, "props": _malware_family_properties(obj)}
+            )
+        elif obj_type == "campaign":
             merge_key = _merge_key(obj)
-            id_to_endpoint[obj.id] = ("Campaign", {"merge_key": merge_key})
-            node_writes.append((_merge_campaign_tx, merge_key, _campaign_properties(obj)))
-        elif obj.type == "relationship":
+            id_to_endpoint[obj.id] = ("Campaign", "merge_key", merge_key)
+            node_groups.setdefault(("Campaign", "merge_key"), []).append(
+                {"key": merge_key, "props": _campaign_properties(obj)}
+            )
+        elif obj_type == "relationship":
             relationships.append(obj)
 
     with driver.session() as session:
-        for tx_fn, key, properties in node_writes:
-            session.execute_write(tx_fn, key, properties)
+        for (label, key_prop), rows in node_groups.items():
+            for chunk in _batches(rows, batch_size):
+                session.execute_write(_bulk_merge_nodes_tx, label, key_prop, chunk)
+
+    # Grouped by (start_label, end_label, rel_type) for the same interpolation reason.
+    edge_groups: dict[tuple[str, str, str, str, str], list[dict]] = {}
+    for rel in relationships:
+        if rel.relationship_type == "uses":
+            rel_type = "USES"
+        elif rel.relationship_type == "attributed-to":
+            rel_type = "ATTRIBUTED_TO"
+        else:
+            continue  # out of scope for this task -- only uses/attributed-to are synced
+
+        start = id_to_endpoint.get(rel.source_ref)
+        end = id_to_endpoint.get(rel.target_ref)
+        if start is None or end is None:
+            # Endpoint outside this bundle's four object types (or a relationship this
+            # sync doesn't model) -- nothing to link.
+            continue
+        start_label, start_key_prop, start_key = start
+        end_label, end_key_prop, end_key = end
+        group = (start_label, start_key_prop, end_label, end_key_prop, rel_type)
+        edge_groups.setdefault(group, []).append({"start_key": start_key, "end_key": end_key})
 
     with driver.session() as session:
-        for rel in relationships:
-            if rel.relationship_type == "uses":
-                rel_type = "USES"
-            elif rel.relationship_type == "attributed-to":
-                rel_type = "ATTRIBUTED_TO"
-            else:
-                continue  # out of scope for this task -- only uses/attributed-to are synced
-
-            start = id_to_endpoint.get(rel.source_ref)
-            end = id_to_endpoint.get(rel.target_ref)
-            if start is None or end is None:
-                # Endpoint outside this bundle's four object types (or a relationship this
-                # sync doesn't model) -- nothing to link.
-                continue
-            start_label, start_key = start
-            end_label, end_key = end
-            session.execute_write(
-                _write_edge_tx,
-                start_label=start_label,
-                start_key=start_key,
-                end_label=end_label,
-                end_key=end_key,
-                rel_type=rel_type,
-                now=now,
-            )
+        for (start_label, start_key_prop, end_label, end_key_prop, rel_type), rows in edge_groups.items():
+            for chunk in _batches(rows, batch_size):
+                session.execute_write(
+                    lambda tx, c=chunk, sl=start_label, skp=start_key_prop, el=end_label,
+                    ekp=end_key_prop, rt=rel_type: upsert_authoritative_assertions_bulk(
+                        tx, start_label=sl, start_key_prop=skp, end_label=el, end_key_prop=ekp,
+                        rel_type=rt, rows=c, feed_source=FEED_SOURCE,
+                        credibility_score=CREDIBILITY_SCORE, now=now,
+                    )
+                )
 
 
 def sync_attck(
@@ -294,6 +309,7 @@ def sync_attck(
     fetch_index_fn: _FetchIndexFn,
     fetch_bundle_fn: _FetchBundleFn,
     last_ingested_versions: dict[str, str],
+    on_domain_synced: Callable[[str, str], None] | None = None,
 ) -> dict[str, str]:
     """Check each of the three ATT&CK domains' collection index (FR-DC-26, always, for
     all three) and, only where the version has bumped since `last_ingested_versions`,
@@ -302,6 +318,13 @@ def sync_attck(
     Returns a dict of only the domains actually (re-)ingested this run, mapping domain ->
     the new version now ingested -- the caller persists this to seed the next run's
     `last_ingested_versions`.
+
+    `on_domain_synced(domain, version)` is called as soon as each domain finishes, so
+    the caller can bank that domain's watermark immediately. Persisting only from the
+    return value loses every completed domain when a later one fails: a run that hits
+    the Lambda timeout partway through banks nothing, and re-syncs already-completed
+    domains from scratch on every subsequent run without ever converging. The re-sync
+    itself is harmless (all writes are MERGEs) -- never finishing is the bug.
     """
     now = datetime.now(timezone.utc)
     newly_ingested: dict[str, str] = {}
@@ -313,6 +336,8 @@ def sync_attck(
         bundle_raw = fetch_bundle_fn(domain)
         _sync_domain_bundle(driver, domain, bundle_raw, now=now)
         newly_ingested[domain] = version
+        if on_domain_synced is not None:
+            on_domain_synced(domain, version)
     return newly_ingested
 
 
@@ -414,20 +439,29 @@ def handler(
     item = polling_table.get_item(Key={"source_id": _ATTCK_SOURCE_ID}).get("Item", {})
     last_ingested_versions = dict(item.get("last_ingested_versions", {}))
 
-    try:
-        newly_ingested = sync_attck(
-            driver, fetch_index_fn, fetch_bundle_fn, last_ingested_versions
-        )
-    finally:
-        if close_client and http_client is not None:
-            http_client.close()
+    def _persist_domain(domain: str, version: str) -> None:
+        """Bank each domain's watermark the moment it lands, not after all three.
 
-    if newly_ingested:
-        last_ingested_versions.update(newly_ingested)
+        Syncing all three domains does not fit in the Lambda's timeout, so persisting
+        only at the end meant a timeout during a later domain discarded an earlier
+        domain's completed work and the job could never converge. Per-domain
+        persistence turns one impossible run into several that each make durable
+        progress.
+        """
+        last_ingested_versions[domain] = version
         polling_table.update_item(
             Key={"source_id": _ATTCK_SOURCE_ID},
             UpdateExpression="SET last_ingested_versions = :v",
             ExpressionAttributeValues={":v": last_ingested_versions},
         )
+
+    try:
+        newly_ingested = sync_attck(
+            driver, fetch_index_fn, fetch_bundle_fn, last_ingested_versions,
+            on_domain_synced=_persist_domain,
+        )
+    finally:
+        if close_client and http_client is not None:
+            http_client.close()
 
     return {"domains_ingested": newly_ingested}

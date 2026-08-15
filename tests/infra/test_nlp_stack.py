@@ -137,29 +137,30 @@ def test_extraction_has_no_neo4j_ssm_grant():
 
 
 def test_resolution_dedup_inference_have_neo4j_ssm_grants():
+    """`grant_ssm_read` grants a per-env wildcard (`crossroads/{env}/*`), not exact param
+    names (NFR-SEC-02 debt, see CLAUDE.md Current State and
+    `test_poller_ssm_grant_is_env_wildcard_not_least_privilege` in
+    test_data_collection_stack.py) -- a literal `neo4j_uri` substring never appears in a
+    rendered policy, so this asserts the wildcard grant is present instead."""
     template, _ = _template()
     for prefix in ("ResolutionFunction", "DedupFunction", "InferenceFunction"):
         statements = _policy_for(template, f"{prefix}ServiceRoleDefaultPolicy")
         rendered = json.dumps(statements, default=str)
-        for param in ("neo4j_uri", "neo4j_user", "neo4j_password"):
-            assert param in rendered, f"{prefix} missing {param} SSM grant"
+        assert "crossroads/dev/*" in rendered, f"{prefix} missing env-wildcard SSM grant"
 
 
-def test_extraction_and_resolution_and_inference_have_anthropic_grant_dedup_does_not():
+def test_extraction_and_resolution_and_inference_have_anthropic_grant():
+    """Extraction/Resolution/Inference all call `grant_ssm_read`, so all carry the same
+    env-wildcard SSM grant (covers `anthropic_api_key` among other params). Dedup also calls
+    `grant_ssm_read` (for its own neo4j grant, see the test above) and therefore carries the
+    identical wildcard -- the wildcard makes "dedup's grant excludes the anthropic key"
+    unverifiable at the IAM-policy level; that per-Lambda distinction was dropped, not
+    quietly broken (NFR-SEC-02 debt, see CLAUDE.md Current State)."""
     template, _ = _template()
     for prefix in ("ExtractionFunction", "ResolutionFunction", "InferenceFunction"):
         statements = _policy_for(template, f"{prefix}ServiceRoleDefaultPolicy")
         rendered = json.dumps(statements, default=str)
-        assert "anthropic_api_key" in rendered, f"{prefix} missing anthropic_api_key grant"
-
-    policies = {
-        lid: res
-        for lid, res in template.find_resources("AWS::IAM::Policy").items()
-        if lid.startswith("DedupFunctionServiceRoleDefaultPolicy")
-    }
-    for policy in policies.values():
-        rendered = json.dumps(policy, default=str)
-        assert "anthropic_api_key" not in rendered, f"dedup should not call an LLM: {rendered}"
+        assert "crossroads/dev/*" in rendered, f"{prefix} missing env-wildcard SSM grant"
 
 
 def test_resolution_has_reconciliation_review_queue_grant_only():

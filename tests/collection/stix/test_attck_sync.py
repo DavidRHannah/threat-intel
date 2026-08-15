@@ -21,11 +21,13 @@ per the brief's fixture scope (one domain's bundles only).
 
 import copy
 import json
+import uuid
 from pathlib import Path
 
 import pytest
 
 from src.collection.stix.attck_sync import DOMAINS, sync_attck
+from src.common.config import get_config
 from src.common.neo4j_driver import close_driver, get_driver
 from src.common.schema_bootstrap import bootstrap_schema
 
@@ -106,6 +108,223 @@ def _edge_exists(d, start_label, start_key_prop, start_key, rel_type, end_label,
             sk=start_key, ek=end_key,
         ).single()
         return row["c"] == 1
+
+
+def _synthetic_uses_bundle(n: int, *, actor_id: str = "GBATCH") -> tuple[dict, str, list[str]]:
+    """A minimal synthetic STIX bundle with one intrusion-set `uses` n distinct
+    attack-patterns -- n USES edges that all share one (ThreatActor, TTP) group, so
+    batching them is actually exercised (the real fixture bundle has only one
+    relationship per group, which can't distinguish batched from unbatched).
+
+    Returns (bundle_raw, actor_merge_key, [technique_ids]).
+    """
+    actor_stix_id = f"intrusion-set--{uuid.uuid4()}"
+    technique_ids = [f"TBATCH{i}" for i in range(n)]
+    objects = [
+        {
+            "type": "intrusion-set",
+            "spec_version": "2.1",
+            "id": actor_stix_id,
+            "created": "2020-01-01T00:00:00.000Z",
+            "modified": "2020-01-01T00:00:00.000Z",
+            "name": "Batch Test Actor",
+            "external_references": [
+                {"source_name": "mitre-attack", "external_id": actor_id,
+                 "url": "https://attack.mitre.org/groups/" + actor_id}
+            ],
+            "x_mitre_deprecated": False,
+            "revoked": False,
+        }
+    ]
+    for tid in technique_ids:
+        tp_stix_id = f"attack-pattern--{uuid.uuid4()}"
+        objects.append({
+            "type": "attack-pattern",
+            "spec_version": "2.1",
+            "id": tp_stix_id,
+            "created": "2020-01-01T00:00:00.000Z",
+            "modified": "2020-01-01T00:00:00.000Z",
+            "name": f"Batch Technique {tid}",
+            "kill_chain_phases": [{"kill_chain_name": "mitre-attack", "phase_name": "execution"}],
+            "external_references": [
+                {"source_name": "mitre-attack", "external_id": tid,
+                 "url": "https://attack.mitre.org/techniques/" + tid}
+            ],
+            "x_mitre_deprecated": False,
+            "revoked": False,
+        })
+        objects.append({
+            "type": "relationship",
+            "spec_version": "2.1",
+            "id": f"relationship--{uuid.uuid4()}",
+            "created": "2020-01-01T00:00:00.000Z",
+            "modified": "2020-01-01T00:00:00.000Z",
+            "relationship_type": "uses",
+            "source_ref": actor_stix_id,
+            "target_ref": tp_stix_id,
+        })
+    bundle = {"type": "bundle", "id": f"bundle--{uuid.uuid4()}", "spec_version": "2.1", "objects": objects}
+    return bundle, actor_id, technique_ids
+
+
+class _CountingSession:
+    """Wraps one real, kept-open Neo4j session, counting `execute_write` calls -- the
+    round-trip unit `_sync_domain_bundle` issues once per node-write batch and once per
+    edge-write batch. `driver.session()` is monkeypatched to always return this same
+    instance, and production code opens/closes a `with driver.session()` block more than
+    once per sync, so `__exit__` deliberately does NOT close the underlying session --
+    the caller closes it once, after the sync completes."""
+
+    def __init__(self, session):
+        self._session = session
+        self.calls = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def execute_write(self, *args, **kwargs):
+        self.calls += 1
+        return self._session.execute_write(*args, **kwargs)
+
+
+class TestEdgeWriteBatching:
+    """Regression coverage for the production bug: `_sync_domain_bundle` used to call
+    `execute_write` once per node AND once per relationship, which against remote AuraDB
+    could not finish `enterprise-attack`'s ~25k relationships inside the Lambda timeout
+    (three consecutive 600s runs, zero forward progress -- see CLAUDE.md Current State).
+    """
+
+    def test_batches_writes_instead_of_one_execute_write_per_row(self, monkeypatch, driver, base_index):
+        monkeypatch.setenv("CROSSROADS_ATTCK_BATCH_SIZE", "3")
+        get_config.cache_clear()
+
+        n = 10
+        bundle, actor_key, technique_ids = _synthetic_uses_bundle(n)
+        bumped_index = copy.deepcopy(base_index)
+        bumped_index["enterprise-attack"]["version"] = "batch-test"
+        fns = FetchFns(index_by_domain=bumped_index, bundle_by_domain={"enterprise-attack": bundle})
+        last_ingested = {
+            "enterprise-attack": None,
+            "mobile-attack": bumped_index["mobile-attack"]["version"],
+            "ics-attack": bumped_index["ics-attack"]["version"],
+        }
+
+        with driver.session() as s:
+            s.run(
+                "MATCH (n) WHERE (n:ThreatActor AND n.merge_key = $a) OR "
+                "(n:TTP AND n.technique_id STARTS WITH 'TBATCH') DETACH DELETE n",
+                a=actor_key,
+            ).consume()
+
+        real_session = driver.session
+        underlying = real_session()
+        counting = _CountingSession(underlying)
+        monkeypatch.setattr(driver, "session", lambda *a, **k: counting)
+        try:
+            sync_attck(driver, fns.fetch_index, fns.fetch_bundle, last_ingested)
+        finally:
+            monkeypatch.setattr(driver, "session", real_session)
+            underlying.close()
+            get_config.cache_clear()
+
+        # 11 node writes (1 actor + 10 techniques) batched at 3/round-trip: ceil(1/3) +
+        # ceil(10/3) == 1 + 4 == 5. 10 edge writes, all one group, batched at 3/round-trip:
+        # ceil(10/3) == 4. Total 9 -- not 21 (one per node + one per edge, the old shape).
+        assert counting.calls == 9
+
+        assert _node_count(driver, "ThreatActor", "merge_key", actor_key) == 1
+        for tid in technique_ids:
+            assert _node_count(driver, "TTP", "technique_id", tid) == 1
+        for tid in technique_ids:
+            assert _edge_exists(
+                driver, "ThreatActor", "merge_key", actor_key, "USES", "TTP", "technique_id", tid
+            )
+
+        with driver.session() as s:
+            s.run(
+                "MATCH (n) WHERE (n:ThreatActor AND n.merge_key = $a) OR "
+                "(n:TTP AND n.technique_id STARTS WITH 'TBATCH') DETACH DELETE n",
+                a=actor_key,
+            ).consume()
+
+
+class TestUnrecognisedStixObjects:
+    def test_unrecognised_custom_objects_do_not_crash_the_sync(self, driver, base_index):
+        """Real ATT&CK bundles are full of MITRE's own custom types (x-mitre-tactic,
+        x-mitre-matrix, x-mitre-data-source, ...) that `stix2.parse` returns as plain
+        dicts, not parsed objects -- `dict` has no `.type` attribute. Reproduced live
+        against the real deployed Lambda (2026-08-15): `AttackPatternError: 'dict'
+        object has no attribute 'type'` on the very first invocation after this sync's
+        batching fix landed, because that dict-vs-object handling was fixed on a
+        worktree branch (353d69b) that was never merged to main, so this refactor was
+        built on top of the still-broken version.
+        """
+        v1_bundle = _load("attck_enterprise_bundle_v1.json")
+        bundle_with_custom_type = copy.deepcopy(v1_bundle)
+        bundle_with_custom_type["objects"].append({
+            "type": "x-mitre-tactic",
+            "id": "x-mitre-tactic--00000000-0000-0000-0000-000000000000",
+            "spec_version": "2.1",
+            "created": "2020-01-01T00:00:00.000Z",
+            "modified": "2020-01-01T00:00:00.000Z",
+            "name": "Custom Tactic",
+            "x_mitre_shortname": "custom-tactic",
+        })
+        bumped_index = copy.deepcopy(base_index)
+        bumped_index["enterprise-attack"]["version"] = "14.2"
+        fns = FetchFns(
+            index_by_domain=bumped_index,
+            bundle_by_domain={"enterprise-attack": bundle_with_custom_type},
+        )
+        last_ingested = {
+            "enterprise-attack": "14.1",
+            "mobile-attack": bumped_index["mobile-attack"]["version"],
+            "ics-attack": bumped_index["ics-attack"]["version"],
+        }
+
+        result = sync_attck(driver, fns.fetch_index, fns.fetch_bundle, last_ingested)
+
+        assert result == {"enterprise-attack": "14.2"}
+        assert _node_count(driver, "TTP", "technique_id", TTP_KEY) == 1
+        assert _node_count(driver, "ThreatActor", "merge_key", THREAT_ACTOR_KEY) == 1
+
+
+class TestIncrementalWatermark:
+    def test_domain_watermark_is_persisted_as_each_domain_completes(self, driver, base_index):
+        """Ported from worktree branch `353d69b` (never merged to main -- also missing
+        until this fix, alongside the dict-vs-object bug above). The handler used to
+        persist `last_ingested_versions` only AFTER all three domains finished, so a run
+        that died partway (the real Lambda hit its 600s cap during mobile/ics) banked
+        nothing -- every later run re-synced enterprise from scratch, hit the cap again,
+        and never converged. Progress must be durable per domain.
+        """
+        v1_bundle = _load("attck_enterprise_bundle_v1.json")
+        bumped_index = copy.deepcopy(base_index)
+        for d in DOMAINS:
+            bumped_index[d]["version"] = "14.2"
+
+        def fetch_index(domain):
+            return bumped_index[domain]
+
+        def fetch_bundle(domain):
+            if domain == "enterprise-attack":
+                return v1_bundle
+            raise RuntimeError(f"{domain} exploded")  # simulates the timeout/failure
+
+        persisted: list[tuple[str, str]] = []
+        last_ingested = {d: "14.1" for d in DOMAINS}
+
+        with pytest.raises(RuntimeError):
+            sync_attck(
+                driver, fetch_index, fetch_bundle, last_ingested,
+                on_domain_synced=lambda domain, version: persisted.append((domain, version)),
+            )
+
+        # enterprise finished before the failure, so its watermark is already banked.
+        assert persisted == [("enterprise-attack", "14.2")]
 
 
 class TestIndexVersionGating:

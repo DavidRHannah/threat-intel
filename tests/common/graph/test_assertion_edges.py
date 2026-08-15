@@ -6,6 +6,7 @@ import pytest
 from src.common.config import get_config
 from src.common.graph.assertion_edges import (
     upsert_authoritative_assertion,
+    upsert_authoritative_assertions_bulk,
     upsert_inferred_assertion,
 )
 from src.common.neo4j_driver import close_driver, get_driver
@@ -22,7 +23,11 @@ def driver():
         s.run("MATCH (n) WHERE n.test_fixture = true DETACH DELETE n").consume()
         s.run(
             "MERGE (c:CVE {cve_id:'CVE-2026-0002'}) SET c.test_fixture = true "
-            "MERGE (a:ThreatActor {merge_key:'apt-assert-test'}) SET a.test_fixture = true"
+            "MERGE (a:ThreatActor {merge_key:'apt-assert-test'}) SET a.test_fixture = true "
+            "FOREACH (i IN range(0, 4) | "
+            "  MERGE (x:ThreatActor {merge_key: 'bulk-actor-' + toString(i)}) "
+            "  SET x.test_fixture = true"
+            ")"
         ).consume()
     yield d
     with d.session() as s:
@@ -252,3 +257,161 @@ def test_a_re_emitted_cluster_does_not_move_confidence(driver):
     assert after_new_cluster > after_first          # genuine new evidence moved it
     assert _upsert("sc-b") == "matched"
     assert _confidence() == after_new_cluster       # the no-op moved nothing
+
+
+# --- Bulk authoritative upsert: fixes the ATT&CK sync's one-round-trip-per-edge timeout ---
+
+
+def _bulk_edges(driver):
+    with driver.session() as s:
+        return list(
+            s.run(
+                "MATCH (:CVE {cve_id:'CVE-2026-0002'})-[r:EXPLOITED_BY]->(a:ThreatActor) "
+                "WHERE a.merge_key STARTS WITH 'bulk-actor-' "
+                "RETURN a.merge_key AS actor, r AS r ORDER BY actor"
+            )
+        )
+
+
+def test_bulk_upsert_writes_multiple_edges_in_one_call(driver):
+    now = datetime.now(timezone.utc)
+    rows = [{"start_key": "CVE-2026-0002", "end_key": f"bulk-actor-{i}"} for i in range(5)]
+    with driver.session() as s:
+        result = s.execute_write(lambda tx: upsert_authoritative_assertions_bulk(
+            tx, start_label="CVE", start_key_prop="cve_id",
+            end_label="ThreatActor", end_key_prop="merge_key",
+            rel_type="EXPLOITED_BY", rows=rows,
+            feed_source="mitre_attck", credibility_score=1.0, now=now,
+        ))
+    assert result["processed"] == 5
+    assert result["created"] == 5
+
+    edges = _bulk_edges(driver)
+    assert len(edges) == 5
+    for row in edges:
+        r = row["r"]
+        assert r["origin"] == ["authoritative"]
+        assert r["feed_sources"] == ["mitre_attck"]
+        assert r["authoritative_confidence"] == 1.0
+        assert r["confidence"] == 1.0
+
+
+def test_bulk_upsert_batches_reduce_round_trips_and_stay_correct_across_boundary(driver):
+    """Same regression shape as EPSS's `test_refresh_batches_writes_instead_of_one_call_per_row`:
+    force batch_size=2 across 5 rows so a boundary falls mid-batch, and prove both that the
+    round-trip count is ceil(rows/batch_size) and that every row still lands correctly."""
+    now = datetime.now(timezone.utc)
+    rows = [{"start_key": "CVE-2026-0002", "end_key": f"bulk-actor-{i}"} for i in range(5)]
+
+    call_count = 0
+
+    class _CountingTx:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def run(self, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return self._inner.run(*args, **kwargs)
+
+    batch_size = 2
+    for i in range(0, len(rows), batch_size):
+        chunk = rows[i : i + batch_size]
+        with driver.session() as s:
+            tx = s.begin_transaction()
+            upsert_authoritative_assertions_bulk(
+                _CountingTx(tx), start_label="CVE", start_key_prop="cve_id",
+                end_label="ThreatActor", end_key_prop="merge_key",
+                rel_type="EXPLOITED_BY", rows=chunk,
+                feed_source="mitre_attck", credibility_score=1.0, now=now,
+            )
+            tx.commit()
+    # ceil(5 rows / batch_size=2) == 3 round trips, not 5.
+    assert call_count == 3
+
+    edges = _bulk_edges(driver)
+    assert len(edges) == 5  # every row landed, including the one that crossed a batch boundary
+
+
+def test_bulk_upsert_is_idempotent_on_repeat(driver):
+    now = datetime.now(timezone.utc)
+    rows = [{"start_key": "CVE-2026-0002", "end_key": "bulk-actor-0"}]
+    with driver.session() as s:
+        first = s.execute_write(lambda tx: upsert_authoritative_assertions_bulk(
+            tx, start_label="CVE", start_key_prop="cve_id",
+            end_label="ThreatActor", end_key_prop="merge_key",
+            rel_type="EXPLOITED_BY", rows=rows,
+            feed_source="mitre_attck", credibility_score=1.0, now=now,
+        ))
+        second = s.execute_write(lambda tx: upsert_authoritative_assertions_bulk(
+            tx, start_label="CVE", start_key_prop="cve_id",
+            end_label="ThreatActor", end_key_prop="merge_key",
+            rel_type="EXPLOITED_BY", rows=rows,
+            feed_source="mitre_attck", credibility_score=1.0, now=now,
+        ))
+    assert first["created"] == 1
+    assert second["created"] == 0  # re-run MERGEs the same edge, creates nothing new
+    edges = [e for e in _bulk_edges(driver) if e["actor"] == "bulk-actor-0"]
+    assert len(edges) == 1  # still exactly one edge, not duplicated
+
+
+def test_bulk_upsert_unions_with_existing_inferred_confidence(driver):
+    """Mirrors `test_confidence_is_max_of_credibility_and_inferred` but through the bulk
+    path: an edge with a prior inferred contribution, then a lower-credibility bulk
+    authoritative write, must derive confidence as max(authoritative, inferred), never
+    clobber the inferred component, and never ratchet down authoritative_confidence."""
+    now = datetime.now(timezone.utc)
+    with driver.session() as s:
+        s.execute_write(lambda tx: upsert_inferred_assertion(
+            tx, start_label="CVE", start_key={"cve_id": "CVE-2026-0002"},
+            end_label="ThreatActor", end_key={"merge_key": "bulk-actor-1"},
+            rel_type="EXPLOITED_BY", story_cluster_id="sc-1", contribution=0.9,
+            source_article_ids=["art-1"], now=now,
+        ))
+        s.execute_write(lambda tx: upsert_authoritative_assertions_bulk(
+            tx, start_label="CVE", start_key_prop="cve_id",
+            end_label="ThreatActor", end_key_prop="merge_key",
+            rel_type="EXPLOITED_BY",
+            rows=[{"start_key": "CVE-2026-0002", "end_key": "bulk-actor-1"}],
+            feed_source="otx", credibility_score=0.6, now=now,
+        ))
+    edges = [e for e in _bulk_edges(driver) if e["actor"] == "bulk-actor-1"]
+    r = edges[0]["r"]
+    assert r["authoritative_confidence"] == 0.6
+    assert r["inferred_confidence"] == 0.9  # not clobbered by the bulk authoritative write
+    assert r["confidence"] == 0.9  # max() over both components
+    assert set(r["origin"]) == {"inferred", "authoritative"}
+
+
+def test_concurrent_bulk_upserts_from_different_feeds_lose_no_feed_source(driver):
+    """Same read-modify-write hazard as `test_concurrent_inferred_writes_lose_no_contribution`,
+    but through the bulk path: N threads each bulk-upsert the SAME edge from a DISTINCT
+    feed_source concurrently. The bulk query computes `feed_sources` via a CASE expression
+    against the relationship's live value inside one write statement (no separate read
+    round trip to go stale), so this must lose no feed_source under concurrency."""
+    n = 8
+    errors = []
+
+    def _write(i):
+        try:
+            with driver.session() as s:
+                s.execute_write(lambda tx: upsert_authoritative_assertions_bulk(
+                    tx, start_label="CVE", start_key_prop="cve_id",
+                    end_label="ThreatActor", end_key_prop="merge_key",
+                    rel_type="EXPLOITED_BY",
+                    rows=[{"start_key": "CVE-2026-0002", "end_key": "bulk-actor-2"}],
+                    feed_source=f"feed-{i}", credibility_score=0.5, now=datetime.now(timezone.utc),
+                ))
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=_write, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert not errors  # no deadlock
+    edges = [e for e in _bulk_edges(driver) if e["actor"] == "bulk-actor-2"]
+    r = edges[0]["r"]
+    assert sorted(r["feed_sources"]) == sorted(f"feed-{i}" for i in range(n))
