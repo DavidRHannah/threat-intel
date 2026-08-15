@@ -42,7 +42,9 @@ class _FakeDriver:
 
 class _FakeSources:
     def scan(self):
-        return {"Items": [{"source_id": "s1"}]}
+        # `type` mirrors the real table: every row carries it, and the handler polls
+        # only the rss ones (the api rows' endpoints are multi-megabyte JSON).
+        return {"Items": [{"source_id": "s1", "type": "rss"}]}
 
 
 class _TableRouter:
@@ -87,7 +89,7 @@ def test_poller_handler_reads_deployed_table_names_from_env(monkeypatch):
     assert "crossroads-dev-dedupstate" in requested_tables
     assert "crossroads-dev-pollingstate" in requested_tables
     assert result["sources_polled"] == 1
-    assert captured["sources"] == [{"source_id": "s1"}]
+    assert captured["sources"] == [{"source_id": "s1", "type": "rss"}]
 
 
 def test_poller_handler_missing_table_env_var_is_a_hard_error(monkeypatch):

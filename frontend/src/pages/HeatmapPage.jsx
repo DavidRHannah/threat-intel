@@ -1,17 +1,18 @@
 import React, { useState, useMemo } from 'react';
 import { AttackMatrix } from '../components/heatmap/AttackMatrix';
 import { TechniqueDrawer } from '../components/heatmap/TechniqueDrawer';
-import { mockTtpHeatmap } from '../api/mockData';
+import { useTtpHeatmap } from '../api/hooks';
 import './HeatmapPage.css';
 
 export default function HeatmapPage() {
   const [selectedTechnique, setSelectedTechnique] = useState(null);
   const [minHeat, setMinHeat] = useState(0.0);
   const [showActiveOnly, setShowActiveOnly] = useState(false);
+  const { data } = useTtpHeatmap();
 
   const filteredData = useMemo(() => {
-    const tactics = mockTtpHeatmap.tactics;
-    let techniques = mockTtpHeatmap.techniques;
+    const tactics = data?.tactics ?? [];
+    let techniques = data?.techniques ?? [];
 
     if (showActiveOnly) {
       techniques = techniques.filter(t => t.exploiter_count > 0);
@@ -19,7 +20,7 @@ export default function HeatmapPage() {
     techniques = techniques.filter(t => t.heat >= minHeat);
 
     return { tactics, techniques };
-  }, [minHeat, showActiveOnly]);
+  }, [data, minHeat, showActiveOnly]);
 
   return (
     <div className="page-container heatmap-page fade-in">

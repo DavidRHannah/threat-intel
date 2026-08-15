@@ -10,9 +10,8 @@ const client = axios.create({
   },
 });
 
-// Request interceptor: attach Cognito JWT if available
+// Request interceptor: attach the Cognito Hosted UI id_token stored by AuthCallbackPage.
 client.interceptors.request.use((config) => {
-  // TODO: Replace with Amplify Auth token retrieval
   const token = localStorage.getItem('crossroads-auth-token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
@@ -20,13 +19,13 @@ client.interceptors.request.use((config) => {
   return config;
 });
 
-// Response interceptor: handle auth errors
+// Response interceptor: an expired/invalid token gets a fresh Hosted UI round-trip.
 client.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      // TODO: Redirect to Cognito login
-      console.warn('Authentication required');
+      localStorage.removeItem('crossroads-auth-token');
+      window.location.href = '/login';
     }
     return Promise.reject(error);
   }

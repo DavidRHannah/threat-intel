@@ -1,48 +1,10 @@
 import React, { useMemo } from 'react';
 import CytoscapeComponent from 'react-cytoscapejs';
+import { buildElements } from './buildElements';
 import './EgoGraph.css';
 
 export function EgoGraph({ data, onNodeClick }) {
-  const elements = useMemo(() => {
-    if (!data) return [];
-    
-    const { node: centralNode, neighbors, edges } = data;
-    
-    const els = [
-      {
-        data: {
-          id: centralNode.id,
-          label: centralNode.cve_id || centralNode.name || centralNode.id,
-          type: centralNode.type
-        }
-      }
-    ];
-
-    neighbors.forEach(n => {
-      els.push({
-        data: {
-          id: n.id,
-          label: n.name || n.cve_id || n.value || n.title || n.id,
-          type: n.type
-        }
-      });
-    });
-
-    edges.forEach((e, idx) => {
-      els.push({
-        data: {
-          id: `edge-${idx}`,
-          source: e.source,
-          target: e.target,
-          label: e.type,
-          confidence: e.confidence,
-          origin: e.origin?.[0] || 'inferred'
-        }
-      });
-    });
-
-    return els;
-  }, [data]);
+  const elements = useMemo(() => buildElements(data), [data]);
 
   const stylesheet = [
     {
@@ -65,6 +27,7 @@ export function EgoGraph({ data, onNodeClick }) {
     { selector: 'node[type="ttp"]', style: { 'background-color': '#22c55e', 'shape': 'triangle' } },
     { selector: 'node[type="ioc"]', style: { 'background-color': '#f97316', 'shape': 'ellipse' } },
     { selector: 'node[type="article"]', style: { 'background-color': '#6b7280', 'shape': 'ellipse' } },
+    { selector: 'node[type="cwe"]', style: { 'background-color': '#eab308', 'shape': 'round-diamond' } },
     {
       selector: 'edge',
       style: {

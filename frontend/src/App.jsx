@@ -3,6 +3,9 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from './hooks/useTheme';
 import { AppShell } from './components/layout/AppShell';
+import { RequireAuth } from './auth/RequireAuth';
+import LoginPage from './pages/LoginPage';
+import AuthCallbackPage from './pages/AuthCallbackPage';
 import './App.css';
 
 /* Lazy-loaded pages for code splitting */
@@ -41,79 +44,83 @@ export default function App() {
         <ThemeProvider>
           <BrowserRouter>
             <Routes>
-              <Route element={<AppShell />}>
-                <Route
-                  index
-                  element={
-                    <Suspense fallback={<PageLoader />}>
-                      <DashboardPage />
-                    </Suspense>
-                  }
-                />
-                <Route
-                  path="heatmap"
-                  element={
-                    <Suspense fallback={<PageLoader />}>
-                      <HeatmapPage />
-                    </Suspense>
-                  }
-                />
-                <Route
-                  path="threats"
-                  element={
-                    <Suspense fallback={<PageLoader />}>
-                      <ThreatsPage />
-                    </Suspense>
-                  }
-                />
-                <Route
-                  path="actors"
-                  element={
-                    <Suspense fallback={<PageLoader />}>
-                      <ActorsPage />
-                    </Suspense>
-                  }
-                />
-                <Route
-                  path="search"
-                  element={
-                    <Suspense fallback={<PageLoader />}>
-                      <SearchPage />
-                    </Suspense>
-                  }
-                />
-                <Route
-                  path="watchlists"
-                  element={
-                    <Suspense fallback={<PageLoader />}>
-                      <WatchlistsPage />
-                    </Suspense>
-                  }
-                />
-                <Route
-                  path="briefings"
-                  element={
-                    <Suspense fallback={<PageLoader />}>
-                      <BriefingsPage />
-                    </Suspense>
-                  }
-                />
-                <Route
-                  path="entity/:type/:id"
-                  element={
-                    <Suspense fallback={<PageLoader />}>
-                      <EntityDetailPage />
-                    </Suspense>
-                  }
-                />
-                <Route
-                  path="settings"
-                  element={
-                    <Suspense fallback={<PageLoader />}>
-                      <SettingsPage />
-                    </Suspense>
-                  }
-                />
+              <Route path="login" element={<LoginPage />} />
+              <Route path="callback" element={<AuthCallbackPage />} />
+              <Route element={<RequireAuth />}>
+                <Route element={<AppShell />}>
+                  <Route
+                    index
+                    element={
+                      <Suspense fallback={<PageLoader />}>
+                        <DashboardPage />
+                      </Suspense>
+                    }
+                  />
+                  <Route
+                    path="heatmap"
+                    element={
+                      <Suspense fallback={<PageLoader />}>
+                        <HeatmapPage />
+                      </Suspense>
+                    }
+                  />
+                  <Route
+                    path="threats"
+                    element={
+                      <Suspense fallback={<PageLoader />}>
+                        <ThreatsPage />
+                      </Suspense>
+                    }
+                  />
+                  <Route
+                    path="actors"
+                    element={
+                      <Suspense fallback={<PageLoader />}>
+                        <ActorsPage />
+                      </Suspense>
+                    }
+                  />
+                  <Route
+                    path="search"
+                    element={
+                      <Suspense fallback={<PageLoader />}>
+                        <SearchPage />
+                      </Suspense>
+                    }
+                  />
+                  <Route
+                    path="watchlists"
+                    element={
+                      <Suspense fallback={<PageLoader />}>
+                        <WatchlistsPage />
+                      </Suspense>
+                    }
+                  />
+                  <Route
+                    path="briefings"
+                    element={
+                      <Suspense fallback={<PageLoader />}>
+                        <BriefingsPage />
+                      </Suspense>
+                    }
+                  />
+                  <Route
+                    path="entity/:type/:id"
+                    element={
+                      <Suspense fallback={<PageLoader />}>
+                        <EntityDetailPage />
+                      </Suspense>
+                    }
+                  />
+                  <Route
+                    path="settings"
+                    element={
+                      <Suspense fallback={<PageLoader />}>
+                        <SettingsPage />
+                      </Suspense>
+                    }
+                  />
+                </Route>
               </Route>
             </Routes>
           </BrowserRouter>

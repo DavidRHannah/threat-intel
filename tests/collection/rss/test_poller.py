@@ -362,3 +362,21 @@ def test_health_alert_fires_after_consecutive_failure_threshold(dedup_table, pol
         )
 
     assert alerts == [("src-1", 6)]
+
+
+def test_rss_sources_excludes_non_rss_rows():
+    """FR-DC-04: the poller scans the whole Sources table, which also holds `api` rows
+    (NVD, CISA KEV, MITRE ATT&CK...). Feeding those to the RSS fetcher makes it download
+    and parse multi-megabyte JSON as a feed -- the real Lambda died with
+    Runtime.OutOfMemory once the table held more than the single seeded RSS row.
+    """
+    from src.collection.rss.poller import rss_sources
+
+    items = [
+        {"source_id": "krebs", "type": "rss", "url": "https://krebsonsecurity.com/feed/"},
+        {"source_id": "mitre_attck", "type": "api", "url": "https://example/attack.json"},
+        {"source_id": "nvd", "type": "api", "url": "https://example/nvd"},
+        {"source_id": "legacy-no-type", "url": "https://example/feed"},
+    ]
+
+    assert [s["source_id"] for s in rss_sources(items)] == ["krebs"]

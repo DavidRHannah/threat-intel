@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
+import { ErrorBoundary } from '../common/ErrorBoundary';
 import './AppShell.css';
 
 /* Maps route paths to page titles shown in the Header */
@@ -31,7 +32,10 @@ export function AppShell() {
 
         <main className="app-shell-content">
           <div className="app-shell-content-inner">
-            <Outlet />
+            {/* Keyed on the path so navigating away clears a previous page's error. */}
+            <ErrorBoundary key={pathname}>
+              <Outlet />
+            </ErrorBoundary>
           </div>
         </main>
       </div>

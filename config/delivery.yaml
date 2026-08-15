@@ -1,0 +1,12 @@
+# Delivery (L7) knobs (technical-specification.md §7 pattern, per config/interop.yaml).
+# Git is the single source of truth: DeliveryStack reads this at CDK synth time and emits
+# each key as a CROSSROADS_<KEY> Lambda environment variable, which
+# src/common/config.py resolves first.
+
+dashboard_default_limit: 10
+
+search_result_limit: 20
+
+# `# spike` -- no empirical basis yet, same posture as L4/L5's uncalibrated knobs
+# (technical-specification.md §11). Recency weighting for the TTP heatmap (FR-DEL-03).
+ttp_heatmap_recency_halflife_days: 30.0    # spike

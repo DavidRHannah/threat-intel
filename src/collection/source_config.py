@@ -10,6 +10,7 @@ reconciles it into both stores on each deploy. The two stores are deliberately a
   nodes may still point at it via PUBLISHED_BY.
 """
 from dataclasses import dataclass
+from decimal import Decimal
 
 import yaml
 
@@ -41,6 +42,20 @@ class SyncResult:
     dynamodb_deleted: int = 0
 
 
+@dataclass
+class SyncPlan:
+    """What `sync_sources` WOULD do, computed without writing anything.
+
+    `sync_sources` deletes DynamoDB rows absent from the config, which orphans the
+    provenance of any Article already carrying that source_id, so the destructive half
+    needs to be previewable before it runs.
+    """
+
+    to_create: list[str]
+    to_update: list[str]
+    to_delete: list[str]
+
+
 def _load_config(config_path: str) -> list[dict]:
     with open(config_path) as f:
         entries = yaml.safe_load(f)
@@ -55,6 +70,32 @@ def _load_config(config_path: str) -> list[dict]:
     return entries
 
 
+def plan_sync(config_path: str, dynamodb_table) -> SyncPlan:
+    """Read-only preview of `sync_sources`'s DynamoDB reconciliation."""
+    entries = _load_config(config_path)
+    existing = {row["source_id"] for row in dynamodb_table.scan()["Items"]}
+    config_ids = [entry["source_id"] for entry in entries]
+
+    return SyncPlan(
+        to_create=[sid for sid in config_ids if sid not in existing],
+        to_update=[sid for sid in config_ids if sid in existing],
+        to_delete=sorted(existing - set(config_ids)),
+    )
+
+
+def _for_dynamodb(entry: dict) -> dict:
+    """DynamoDB rejects Python floats, and credibility_score is a float in YAML.
+
+    Decimal(str(v)) rather than Decimal(v): the latter carries the full binary
+    expansion of the float (0.9 -> 0.90000000000000002220446...), which DynamoDB
+    rejects for exceeding 38 digits of precision.
+    """
+    return {
+        key: Decimal(str(value)) if isinstance(value, float) else value
+        for key, value in entry.items()
+    }
+
+
 def _sync_dynamodb(entries: list[dict], dynamodb_table) -> tuple[int, int, int]:
     existing = {row["source_id"]: row for row in dynamodb_table.scan()["Items"]}
     config_ids = {entry["source_id"] for entry in entries}
@@ -66,7 +107,7 @@ def _sync_dynamodb(entries: list[dict], dynamodb_table) -> tuple[int, int, int]:
             updated += 1
         else:
             created += 1
-        dynamodb_table.put_item(Item=entry)
+        dynamodb_table.put_item(Item=_for_dynamodb(entry))
 
     deactivated = 0
     for source_id in existing:

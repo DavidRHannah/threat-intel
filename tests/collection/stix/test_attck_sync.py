@@ -472,3 +472,76 @@ class TestDeprecatedRevokedFlagging:
             driver, "Campaign", "merge_key", CAMPAIGN_KEY, "ATTRIBUTED_TO",
             "ThreatActor", "merge_key", THREAT_ACTOR_KEY,
         )
+
+
+class TestCustomMitreObjects:
+    def test_bundle_with_x_mitre_custom_objects_still_syncs(self, driver, base_index):
+        """The real ATT&CK bundle is full of `x-mitre-*` objects (tactics, matrices,
+        data sources). stix2.parse(..., allow_custom=True) returns those as plain
+        DICTS, not parsed objects, so `obj.type` raises AttributeError and the whole
+        sync dies before writing anything. Every fixture bundle here contains only
+        standard STIX types, which is why this never showed up until the real Lambda
+        ran: 'dict' object has no attribute 'type'.
+        """
+        bundle = _load("attck_enterprise_bundle_v1.json")
+        bundle["objects"].append(
+            {
+                "type": "x-mitre-tactic",
+                "id": "x-mitre-tactic--33333333-3333-4333-8333-333333333333",
+                "name": "Reconnaissance",
+                "spec_version": "2.1",
+                "created": "2020-01-01T00:00:00.000Z",
+                "modified": "2020-01-01T00:00:00.000Z",
+            }
+        )
+        bumped_index = copy.deepcopy(base_index)
+        bumped_index["enterprise-attack"]["version"] = "14.2"
+        fns = FetchFns(
+            index_by_domain=bumped_index,
+            bundle_by_domain={"enterprise-attack": bundle},
+        )
+        last_ingested = {
+            "enterprise-attack": "14.1",
+            "mobile-attack": bumped_index["mobile-attack"]["version"],
+            "ics-attack": bumped_index["ics-attack"]["version"],
+        }
+
+        result = sync_attck(driver, fns.fetch_index, fns.fetch_bundle, last_ingested)
+
+        assert result == {"enterprise-attack": "14.2"}
+        # the custom object is ignored, but the standard ones are still written
+        assert _node_count(driver, "TTP", "technique_id", TTP_KEY) == 1
+        assert _node_count(driver, "ThreatActor", "merge_key", THREAT_ACTOR_KEY) == 1
+
+
+class TestIncrementalWatermark:
+    def test_domain_watermark_is_persisted_as_each_domain_completes(self, driver, base_index):
+        """The handler persisted `last_ingested_versions` only AFTER all three domains
+        finished, so a run that died partway (the real Lambda hit its 600s cap during
+        mobile/ics) banked nothing -- every later run re-synced enterprise from scratch,
+        hit the cap again, and never converged. Progress must be durable per domain.
+        """
+        v1_bundle = _load("attck_enterprise_bundle_v1.json")
+        bumped_index = copy.deepcopy(base_index)
+        for d in DOMAINS:
+            bumped_index[d]["version"] = "14.2"
+
+        def fetch_index(domain):
+            return bumped_index[domain]
+
+        def fetch_bundle(domain):
+            if domain == "enterprise-attack":
+                return v1_bundle
+            raise RuntimeError(f"{domain} exploded")  # simulates the timeout/failure
+
+        persisted: list[tuple[str, str]] = []
+        last_ingested = {d: "14.1" for d in DOMAINS}
+
+        with pytest.raises(RuntimeError):
+            sync_attck(
+                driver, fetch_index, fetch_bundle, last_ingested,
+                on_domain_synced=lambda domain, version: persisted.append((domain, version)),
+            )
+
+        # enterprise finished before the failure, so its watermark is already banked.
+        assert persisted == [("enterprise-attack", "14.2")]

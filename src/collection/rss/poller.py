@@ -167,6 +167,17 @@ def _poll_one_source(
     return {"source_id": source_id, "events_published": events_published}
 
 
+def rss_sources(items: list[dict]) -> list[dict]:
+    """Keep only the RSS rows from a full `Sources` table scan.
+
+    The table also holds `api` rows (NVD, CISA KEV, MITRE ATT&CK, abuse.ch...), whose
+    endpoints are JSON -- some tens of megabytes. Handing those to the RSS fetcher
+    downloads and parses them as feeds, which killed the Lambda with
+    Runtime.OutOfMemory. A row with no `type` is not assumed to be a feed.
+    """
+    return [item for item in items if item.get("type") == "rss"]
+
+
 def poll_sources(
     sources: list[dict],
     fetch_fn: Callable[[dict], Any],
@@ -279,7 +290,7 @@ def handler(event: dict, context: Any) -> dict:
     queue_url = get_config("discovery_updates_queue_url")
     timeout_seconds = float(get_config("rss_poll_timeout_seconds", default="8"))
 
-    sources = sources_table.scan().get("Items", [])
+    sources = rss_sources(sources_table.scan().get("Items", []))
     results = poll_sources(
         sources,
         functools.partial(_default_fetch, timeout_seconds=timeout_seconds),

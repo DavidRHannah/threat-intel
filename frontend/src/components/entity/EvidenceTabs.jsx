@@ -41,7 +41,8 @@ export function EvidenceTabs({ subgraph }) {
           <table className="evidence-table">
             <thead><tr><th>Title</th><th>Source</th></tr></thead>
             <tbody>
-              {articles.map(n => <tr key={n.id}><td>{n.title}</td><td>{n.source}</td></tr>)}
+              {/* Article nodes carry `source_id`; `source` is the mock-data name. */}
+              {articles.map(n => <tr key={n.id}><td>{n.title}</td><td>{n.source || n.source_id}</td></tr>)}
               {articles.length === 0 && <tr><td colSpan="2">No related articles found.</td></tr>}
             </tbody>
           </table>
