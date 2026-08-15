@@ -37,6 +37,15 @@
   line-height: 1.6;
 }
 
+.entity-description p {
+  margin: 0;
+}
+
+.entity-description a {
+  color: var(--color-primary);
+  text-decoration: underline;
+}
+
 .entity-scores-row {
   display: flex;
   align-items: center;

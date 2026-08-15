@@ -1,10 +1,9 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import './TopThreats.css';
-import { mockTopCves, mockTopActors, mockTopMalware } from '../../api/mockData';
+import { useTopCves, useTopActors, useTopMalware } from '../../api/hooks';
 import { formatScore } from '../../utils/formatters';
 
-// Assume these exist as requested
 const SeverityBadge = ({ severity }) => {
   const normalized = severity?.toLowerCase() || 'unknown';
   return <span className={`badge badge--${normalized}`}>{normalized}</span>;
@@ -12,34 +11,40 @@ const SeverityBadge = ({ severity }) => {
 
 export function TopThreats() {
   const [activeTab, setActiveTab] = useState('cves');
-  
+  const { data: cvesData } = useTopCves(5);
+  const { data: actorsData } = useTopActors(5);
+  const { data: malwareData } = useTopMalware(5);
+  const topCves = cvesData?.cves ?? [];
+  const topActors = actorsData?.actors ?? [];
+  const topMalware = malwareData?.malware ?? [];
+
   return (
     <div className="top-threats card fade-in" id="top-threats">
       <div className="top-threats__header">
         <h2 className="top-threats__title">Top Threats</h2>
         <div className="top-threats__tabs" role="tablist">
-          <button 
+          <button
             role="tab"
             aria-selected={activeTab === 'cves'}
-            className={`top-threats__tab ${activeTab === 'cves' ? 'active' : ''}`} 
+            className={`top-threats__tab ${activeTab === 'cves' ? 'active' : ''}`}
             onClick={() => setActiveTab('cves')}
             id="tab-cves"
           >
             CVEs
           </button>
-          <button 
+          <button
             role="tab"
             aria-selected={activeTab === 'actors'}
-            className={`top-threats__tab ${activeTab === 'actors' ? 'active' : ''}`} 
+            className={`top-threats__tab ${activeTab === 'actors' ? 'active' : ''}`}
             onClick={() => setActiveTab('actors')}
             id="tab-actors"
           >
             Actors
           </button>
-          <button 
+          <button
             role="tab"
             aria-selected={activeTab === 'malware'}
-            className={`top-threats__tab ${activeTab === 'malware' ? 'active' : ''}`} 
+            className={`top-threats__tab ${activeTab === 'malware' ? 'active' : ''}`}
             onClick={() => setActiveTab('malware')}
             id="tab-malware"
           >
@@ -47,12 +52,12 @@ export function TopThreats() {
           </button>
         </div>
       </div>
-      
+
       <div className="top-threats__content">
         {activeTab === 'cves' && (
           <div className="top-threats__list" role="tabpanel" id="panel-cves">
-            {mockTopCves.slice(0, 5).map((cve) => (
-              <Link key={cve.id} to={`/entity/cve/${cve.cve_id}`} className="threat-item">
+            {topCves.slice(0, 5).map((cve) => (
+              <Link key={cve.id} to={`/entity/cve/${cve.id}`} className="threat-item">
                 <div className="threat-item__main">
                   <span className="threat-item__name">{cve.cve_id}</span>
                   <SeverityBadge severity={cve.severity_band} />
@@ -66,16 +71,16 @@ export function TopThreats() {
             ))}
           </div>
         )}
-        
+
         {activeTab === 'actors' && (
           <div className="top-threats__list" role="tabpanel" id="panel-actors">
-            {mockTopActors.slice(0, 5).map((actor) => (
+            {topActors.slice(0, 5).map((actor) => (
               <Link key={actor.id} to={`/entity/actor/${actor.id}`} className="threat-item">
                 <div className="threat-item__main">
                   <span className="threat-item__name">{actor.name}</span>
                   <span className="threat-item__flag" title={actor.origin_country}>
-                    {actor.origin_country === 'Russia' ? '🇷🇺' : 
-                     actor.origin_country === 'North Korea' ? '🇰🇵' : 
+                    {actor.origin_country === 'Russia' ? '🇷🇺' :
+                     actor.origin_country === 'North Korea' ? '🇰🇵' :
                      actor.origin_country === 'China' ? '🇨🇳' : '🏳️'}
                   </span>
                   <span className="badge badge--unknown">{actor.motivation}</span>
@@ -87,10 +92,10 @@ export function TopThreats() {
             ))}
           </div>
         )}
-        
+
         {activeTab === 'malware' && (
           <div className="top-threats__list" role="tabpanel" id="panel-malware">
-            {mockTopMalware.slice(0, 5).map((malware) => (
+            {topMalware.slice(0, 5).map((malware) => (
               <Link key={malware.id} to={`/entity/malware/${malware.id}`} className="threat-item">
                 <div className="threat-item__main">
                   <span className="threat-item__name">{malware.name}</span>

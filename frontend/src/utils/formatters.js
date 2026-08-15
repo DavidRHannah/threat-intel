@@ -73,3 +73,13 @@ export function formatNumber(num) {
   if (num >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
   return num.toLocaleString();
 }
+
+/* Description text cleanup */
+
+// MITRE ATT&CK descriptions embed "(Citation: <key>)" markers that reference an
+// external_references list we don't ingest, so the key is meaningless on its own —
+// stripped rather than shown as a broken-looking footnote.
+export function stripCitations(text) {
+  if (!text) return text;
+  return text.replace(/\s?\(Citation:[^)]*\)/g, '').trim();
+}

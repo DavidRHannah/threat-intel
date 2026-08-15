@@ -11,7 +11,10 @@
 #   category            - osint | vuln_feed | threat_feed | framework.
 #   credibility_score   - float in [0, 1]; consumed by L3 credibility recompute.
 #   polling_tier        - standard | frequent | daily (poll cadence bucket).
-#   auth_param_ref      - SSM SecureString parameter name holding the API key/token, or null.
+#   (credentials)       - NOT configured here. Collectors resolve them at runtime via
+#                         load_credential(source_id, name) -> SSM SecureString
+#                         /crossroads/{env}/{source_id}_{name} (e.g. otx_api_key,
+#                         ghsa_token), so source_id MUST match the collector's own id.
 #   api_version         - upstream API version pinned against, or null for RSS.
 
 - source_id: krebs
@@ -21,37 +24,33 @@
   category: osint
   credibility_score: 0.9
   polling_tier: standard
-  auth_param_ref: null
   api_version: null
 
-- source_id: bleepingcomputer
+- source_id: bleepingcomputer-rss
   name: BleepingComputer
   url: https://www.bleepingcomputer.com/feed/
   type: rss
   category: osint
   credibility_score: 0.85
   polling_tier: standard
-  auth_param_ref: null
   api_version: null
 
-- source_id: nvd-cve
+- source_id: nvd
   name: NVD CVE Feed
   url: https://services.nvd.nist.gov/rest/json/cves/2.0
   type: api
   category: vuln_feed
   credibility_score: 1.0
   polling_tier: frequent
-  auth_param_ref: /crossroads/sources/nvd/api_key
   api_version: "2.0"
 
-- source_id: cisa-kev
+- source_id: cisa_kev
   name: CISA Known Exploited Vulnerabilities Catalog
   url: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
   type: api
   category: vuln_feed
   credibility_score: 1.0
   polling_tier: daily
-  auth_param_ref: null
   api_version: null
 
 - source_id: ghsa
@@ -61,7 +60,6 @@
   category: vuln_feed
   credibility_score: 0.95
   polling_tier: frequent
-  auth_param_ref: /crossroads/sources/ghsa/api_token
   api_version: "v4"
 
 - source_id: otx
@@ -71,7 +69,6 @@
   category: threat_feed
   credibility_score: 0.75
   polling_tier: frequent
-  auth_param_ref: /crossroads/sources/otx/api_key
   api_version: "v1"
 
 - source_id: urlhaus
@@ -81,7 +78,6 @@
   category: threat_feed
   credibility_score: 0.85
   polling_tier: frequent
-  auth_param_ref: null
   api_version: null
 
 - source_id: malwarebazaar
@@ -91,7 +87,6 @@
   category: threat_feed
   credibility_score: 0.85
   polling_tier: frequent
-  auth_param_ref: /crossroads/sources/malwarebazaar/api_key
   api_version: "v1"
 
 - source_id: threatfox
@@ -101,15 +96,13 @@
   category: threat_feed
   credibility_score: 0.85
   polling_tier: frequent
-  auth_param_ref: /crossroads/sources/threatfox/api_key
   api_version: "v1"
 
-- source_id: mitre-attack
+- source_id: mitre_attck
   name: MITRE ATT&CK Enterprise
   url: https://raw.githubusercontent.com/mitre/cti/master/enterprise-attack/enterprise-attack.json
   type: api
   category: framework
   credibility_score: 1.0
   polling_tier: daily
-  auth_param_ref: null
   api_version: null

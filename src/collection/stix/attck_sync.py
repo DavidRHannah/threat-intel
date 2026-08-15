@@ -65,6 +65,7 @@ FR-DC-26, FR-DC-27, FR-DC-28, FR-DC-01 (TTP, ThreatActor, MalwareFamily, Campaig
 """
 
 from datetime import datetime, timezone
+from collections.abc import Callable
 from typing import Any, Protocol
 
 import stix2
@@ -238,23 +239,28 @@ def _sync_domain_bundle(driver, domain: str, bundle_raw: dict, *, now: datetime)
     relationships: list[Any] = []
 
     for obj in parsed.objects:
-        if obj.type == "attack-pattern":
+        # stix2 returns unrecognised types (ATT&CK's own x-mitre-tactic, x-mitre-matrix,
+        # x-mitre-data-source, ...) as plain dicts rather than parsed objects, so this
+        # cannot be `obj.type`. Everything we act on below is a standard STIX type and
+        # therefore always a real object; the dicts fall through and are skipped.
+        obj_type = obj["type"] if isinstance(obj, dict) else obj.type
+        if obj_type == "attack-pattern":
             technique_id, properties = _ttp_properties(obj, domain)
             id_to_endpoint[obj.id] = ("TTP", {"technique_id": technique_id})
             node_writes.append((_merge_ttp_tx, technique_id, properties))
-        elif obj.type == "intrusion-set":
+        elif obj_type == "intrusion-set":
             merge_key = _merge_key(obj)
             id_to_endpoint[obj.id] = ("ThreatActor", {"merge_key": merge_key})
             node_writes.append((_merge_threat_actor_tx, merge_key, _threat_actor_properties(obj)))
-        elif obj.type == "malware":
+        elif obj_type == "malware":
             merge_key = _merge_key(obj)
             id_to_endpoint[obj.id] = ("MalwareFamily", {"merge_key": merge_key})
             node_writes.append((_merge_malware_family_tx, merge_key, _malware_family_properties(obj)))
-        elif obj.type == "campaign":
+        elif obj_type == "campaign":
             merge_key = _merge_key(obj)
             id_to_endpoint[obj.id] = ("Campaign", {"merge_key": merge_key})
             node_writes.append((_merge_campaign_tx, merge_key, _campaign_properties(obj)))
-        elif obj.type == "relationship":
+        elif obj_type == "relationship":
             relationships.append(obj)
 
     with driver.session() as session:
@@ -294,6 +300,7 @@ def sync_attck(
     fetch_index_fn: _FetchIndexFn,
     fetch_bundle_fn: _FetchBundleFn,
     last_ingested_versions: dict[str, str],
+    on_domain_synced: Callable[[str, str], None] | None = None,
 ) -> dict[str, str]:
     """Check each of the three ATT&CK domains' collection index (FR-DC-26, always, for
     all three) and, only where the version has bumped since `last_ingested_versions`,
@@ -302,6 +309,13 @@ def sync_attck(
     Returns a dict of only the domains actually (re-)ingested this run, mapping domain ->
     the new version now ingested -- the caller persists this to seed the next run's
     `last_ingested_versions`.
+
+    `on_domain_synced(domain, version)` is called as soon as each domain finishes, so
+    the caller can bank that domain's watermark immediately. Persisting only from the
+    return value loses every completed domain when a later one fails: the real Lambda
+    hit its 600s timeout during mobile/ics, banked nothing, and so re-synced enterprise
+    on every subsequent run without ever converging. The re-sync itself is harmless
+    (all writes are MERGEs) -- never finishing is the bug.
     """
     now = datetime.now(timezone.utc)
     newly_ingested: dict[str, str] = {}
@@ -313,6 +327,8 @@ def sync_attck(
         bundle_raw = fetch_bundle_fn(domain)
         _sync_domain_bundle(driver, domain, bundle_raw, now=now)
         newly_ingested[domain] = version
+        if on_domain_synced is not None:
+            on_domain_synced(domain, version)
     return newly_ingested
 
 
@@ -414,20 +430,31 @@ def handler(
     item = polling_table.get_item(Key={"source_id": _ATTCK_SOURCE_ID}).get("Item", {})
     last_ingested_versions = dict(item.get("last_ingested_versions", {}))
 
-    try:
-        newly_ingested = sync_attck(
-            driver, fetch_index_fn, fetch_bundle_fn, last_ingested_versions
-        )
-    finally:
-        if close_client and http_client is not None:
-            http_client.close()
+    def _persist_domain(domain: str, version: str) -> None:
+        """Bank each domain's watermark the moment it lands, not after all three.
 
-    if newly_ingested:
-        last_ingested_versions.update(newly_ingested)
+        Syncing all three domains does not fit in the Lambda's timeout, so persisting
+        only at the end meant a timeout during domain 2 discarded domain 1's completed
+        work and the job could never converge. Per-domain persistence turns one
+        impossible run into three that each make durable progress.
+        """
+        last_ingested_versions[domain] = version
         polling_table.update_item(
             Key={"source_id": _ATTCK_SOURCE_ID},
             UpdateExpression="SET last_ingested_versions = :v",
             ExpressionAttributeValues={":v": last_ingested_versions},
         )
+
+    try:
+        newly_ingested = sync_attck(
+            driver,
+            fetch_index_fn,
+            fetch_bundle_fn,
+            last_ingested_versions,
+            on_domain_synced=_persist_domain,
+        )
+    finally:
+        if close_client and http_client is not None:
+            http_client.close()
 
     return {"domains_ingested": newly_ingested}

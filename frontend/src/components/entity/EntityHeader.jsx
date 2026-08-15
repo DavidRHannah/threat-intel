@@ -1,9 +1,19 @@
 import React from 'react';
+import ReactMarkdown from 'react-markdown';
 import { EntityBadge } from '../common/EntityBadge';
 import { SeverityBadge } from '../common/SeverityBadge';
 import { ScoreBar } from '../common/ScoreBar';
-import { getEntityType } from '../../utils/formatters';
+import { getEntityType, stripCitations } from '../../utils/formatters';
 import './EntityHeader.css';
+
+// Neo4j returns absent numeric properties as null, not undefined, so a `!== undefined`
+// guard lets null through and `null.toFixed()` throws. 1641 of 1677 live CVE nodes have
+// no cvss_score, so this is the common case, not the edge case.
+const isNumber = (v) => typeof v === 'number' && Number.isFinite(v);
+
+const descriptionLinkRenderer = ({ href, children }) => (
+  <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
+);
 
 export function EntityHeader({ entity }) {
   if (!entity) return null;
@@ -33,17 +43,23 @@ export function EntityHeader({ entity }) {
             {entity.aliases && ` | Aliases: ${entity.aliases.join(', ')}`}
           </div>
         )}
-        <p className="entity-description">{entity.description}</p>
+        {entity.description && (
+          <div className="entity-description">
+            <ReactMarkdown components={{ a: descriptionLinkRenderer }}>
+              {stripCitations(entity.description)}
+            </ReactMarkdown>
+          </div>
+        )}
       </div>
 
       <div className="entity-scores-row">
-        {entity.cvss_score !== undefined && (
+        {isNumber(entity.cvss_score) && (
           <ScoreBar label="CVSS Score" score={entity.cvss_score / 10} value={entity.cvss_score.toFixed(1)} />
         )}
-        {entity.epss_score !== undefined && (
+        {isNumber(entity.epss_score) && (
           <ScoreBar label="EPSS Score" score={entity.epss_score} value={(entity.epss_score * 100).toFixed(1) + '%'} />
         )}
-        {entity.relevance_score !== undefined && (
+        {isNumber(entity.relevance_score) && (
           <ScoreBar label="Relevance" score={entity.relevance_score} value={(entity.relevance_score * 100).toFixed(1) + '%'} />
         )}
       </div>

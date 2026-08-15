@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Search } from 'lucide-react';
-import { mockTopCves, mockTopActors, mockTopMalware } from '../api/mockData';
+import { useSearch } from '../api/hooks';
 import { EntityBadge } from '../components/common/EntityBadge';
 import { SeverityBadge } from '../components/common/SeverityBadge';
 import { formatScore } from '../utils/formatters';
@@ -10,7 +10,6 @@ import './SearchPage.css';
 export default function SearchPage() {
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
-  const [results, setResults] = useState([]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -19,19 +18,8 @@ export default function SearchPage() {
     return () => clearTimeout(timer);
   }, [query]);
 
-  useEffect(() => {
-    if (!debouncedQuery) {
-      setResults([]);
-      return;
-    }
-    const q = debouncedQuery.toLowerCase();
-    
-    const cves = mockTopCves.filter(c => c.cve_id?.toLowerCase().includes(q) || c.description?.toLowerCase().includes(q)).map(c => ({...c, _type: 'cve'}));
-    const actors = mockTopActors.filter(a => a.name?.toLowerCase().includes(q) || a.mitre_id?.toLowerCase().includes(q)).map(a => ({...a, _type: 'actor'}));
-    const malware = mockTopMalware.filter(m => m.name?.toLowerCase().includes(q) || m.mitre_id?.toLowerCase().includes(q)).map(m => ({...m, _type: 'malware'}));
-    
-    setResults([...cves, ...actors, ...malware]);
-  }, [debouncedQuery]);
+  const { data } = useSearch(debouncedQuery);
+  const results = data?.results ?? [];
 
   return (
     <div className="search-page fade-in">

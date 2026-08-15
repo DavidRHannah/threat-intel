@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import client from './client';
+import { normalizeSubgraph } from './normalize';
 
 /* ============================================
    Dashboard API Hooks
@@ -62,7 +63,7 @@ export function useTtpHeatmap() {
 export function useSubgraph(id) {
   return useQuery({
     queryKey: ['dashboard', 'subgraph', id],
-    queryFn: () => client.get(`/dashboard/subgraph/${id}`).then(r => r.data),
+    queryFn: () => client.get(`/dashboard/subgraph/${id}`).then(r => normalizeSubgraph(r.data)),
     enabled: !!id,
     staleTime: 5 * 60 * 1000,
   });

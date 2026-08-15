@@ -15,6 +15,9 @@
 .score-bar-label {
   font-weight: 500;
   color: var(--text-primary);
+  cursor: help;
+  border-bottom: 1px dotted var(--text-tertiary);
+  width: fit-content;
 }
 
 .score-bar-value {

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { LayoutGrid, List, CheckCircle2, AlertTriangle } from 'lucide-react';
-import { mockTopActors, mockTopMalware } from '../api/mockData';
+import { useTopActors, useTopMalware } from '../api/hooks';
 import { formatScore } from '../utils/formatters';
 import './ActorsPage.css';
 
@@ -9,8 +9,10 @@ export default function ActorsPage() {
   const [activeTab, setActiveTab] = useState('actors');
   const [viewMode, setViewMode] = useState('grid');
   const [sortBy, setSortBy] = useState('relevance');
+  const { data: actorsData } = useTopActors(100);
+  const { data: malwareData } = useTopMalware(100);
 
-  const data = activeTab === 'actors' ? mockTopActors : mockTopMalware;
+  const data = activeTab === 'actors' ? (actorsData?.actors ?? []) : (malwareData?.malware ?? []);
   const sortedData = [...data].sort((a, b) => {
     if (sortBy === 'relevance') return (b.relevance_score || 0) - (a.relevance_score || 0);
     if (sortBy === 'name') return a.name.localeCompare(b.name);

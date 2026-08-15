@@ -2,15 +2,14 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight } from 'lucide-react';
 import './MiniHeatmap.css';
-import { mockTtpHeatmap } from '../../api/mockData';
+import { useTtpHeatmap } from '../../api/hooks';
 
 export function MiniHeatmap() {
-  // Sort by heat and take top 10
-  const topTtps = [...mockTtpHeatmap.techniques]
+  const { data } = useTtpHeatmap();
+  const topTtps = [...(data?.techniques ?? [])]
     .sort((a, b) => b.heat - a.heat)
     .slice(0, 10);
 
-  // Helper to determine color based on heat score (0-1)
   const getHeatColor = (heat) => {
     if (heat > 0.8) return 'var(--color-critical)';
     if (heat > 0.6) return 'var(--color-high)';
@@ -18,7 +17,6 @@ export function MiniHeatmap() {
     return 'var(--color-primary)';
   };
 
-  // Transparent version for cell background tinting
   const getHeatBg = (heat) => {
     if (heat > 0.8) return 'var(--color-critical-bg)';
     if (heat > 0.6) return 'var(--color-high-bg)';
@@ -34,14 +32,14 @@ export function MiniHeatmap() {
           View Full <ArrowRight size={14} />
         </Link>
       </div>
-      
+
       <div className="mini-heatmap__grid">
         {topTtps.map((ttp) => (
           <Link
             key={ttp.id}
             to="/heatmap"
             className="mini-heatmap__cell"
-            style={{ 
+            style={{
               backgroundColor: getHeatBg(ttp.heat),
               borderLeft: `3px solid ${getHeatColor(ttp.heat)}`,
             }}
@@ -61,7 +59,6 @@ export function MiniHeatmap() {
               {ttp.exploiter_count} exploiter{ttp.exploiter_count !== 1 ? 's' : ''}
             </div>
 
-            {/* Hover tooltip with more detail */}
             <div className="mini-heatmap__tooltip">
               <div className="mini-heatmap__tooltip-title">{ttp.name}</div>
               <div className="mini-heatmap__tooltip-row">
