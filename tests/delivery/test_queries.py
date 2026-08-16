@@ -7,6 +7,9 @@ from src.common.neo4j_driver import close_driver, get_driver
 from src.delivery.queries import (
     entity_short_type,
     entity_subgraph_type,
+    fetch_cves_for_all_assets,
+    fetch_cves_for_asset,
+    fetch_known_vendor_products,
     fetch_recent_stories,
     fetch_stats,
     fetch_subgraph,
@@ -293,3 +296,55 @@ def test_entity_short_type_and_subgraph_type_mappings():
     assert entity_subgraph_type(["IOC"]) == "ioc"
     assert entity_subgraph_type(["Article"]) == "article"
     assert entity_subgraph_type(["CWE"]) == "cwe"
+
+
+def test_fetch_cves_for_asset_orders_by_severity(driver):
+    with driver.session() as s:
+        s.run(
+            "MERGE (a:Asset {asset_key:'k1', vendor:'acme', product:'x', version:'1.0'}) "
+            "MERGE (c1:CVE {cve_id:'CVE-A', severity_score:0.9}) "
+            "MERGE (c2:CVE {cve_id:'CVE-B', severity_score:0.3}) "
+            "MERGE (c1)-[:AFFECTS]->(a) MERGE (c2)-[:AFFECTS]->(a)"
+        ).consume()
+        rows = s.execute_read(lambda tx: fetch_cves_for_asset(tx, asset_key="k1"))
+        assert [r["cve_id"] for r in rows] == ["CVE-A", "CVE-B"]
+    with driver.session() as s:
+        s.run("MATCH (a:Asset {asset_key:'k1'}) DETACH DELETE a").consume()
+        s.run("MATCH (c:CVE) WHERE c.cve_id IN ['CVE-A','CVE-B'] DETACH DELETE c").consume()
+
+
+def test_fetch_cves_for_all_assets_dedupes(driver):
+    with driver.session() as s:
+        s.run(
+            "MERGE (a1:Asset {asset_key:'k2', vendor:'acme', product:'y', version:'1.0'}) "
+            "MERGE (a2:Asset {asset_key:'k3', vendor:'acme', product:'z', version:'1.0'}) "
+            "MERGE (c:CVE {cve_id:'CVE-C', severity_score:0.5}) "
+            "MERGE (c)-[:AFFECTS]->(a1) MERGE (c)-[:AFFECTS]->(a2)"
+        ).consume()
+        rows = s.execute_read(fetch_cves_for_all_assets)
+        assert len([r for r in rows if r["cve_id"] == "CVE-C"]) == 1
+    with driver.session() as s:
+        s.run("MATCH (a:Asset) WHERE a.asset_key IN ['k2','k3'] DETACH DELETE a").consume()
+        s.run("MATCH (c:CVE {cve_id:'CVE-C'}) DETACH DELETE c").consume()
+
+
+def test_fetch_known_vendor_products_returns_distinct_pairs(driver):
+    with driver.session() as s:
+        s.run(
+            "MERGE (:CPEMatch {match_criteria_id:'mc-1', vendor:'acme', product:'widget'}) "
+            "MERGE (:CPEMatch {match_criteria_id:'mc-2', vendor:'acme', product:'widget'}) "
+            "MERGE (:CPEMatch {match_criteria_id:'mc-3', vendor:'other', product:'gizmo'})"
+        ).consume()
+        rows = s.execute_read(lambda tx: fetch_known_vendor_products(tx, limit=2000))
+        pairs = {(r["vendor"], r["product"]) for r in rows}
+        assert ("acme", "widget") in pairs
+        assert ("other", "gizmo") in pairs
+        # dedup: acme/widget should appear once despite two CPEMatch rows
+        assert len(
+            [r for r in rows if r["vendor"] == "acme" and r["product"] == "widget"]
+        ) == 1
+    with driver.session() as s:
+        s.run(
+            "MATCH (m:CPEMatch) WHERE m.match_criteria_id IN "
+            "['mc-1','mc-2','mc-3'] DETACH DELETE m"
+        ).consume()

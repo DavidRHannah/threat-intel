@@ -252,3 +252,50 @@ def fetch_subgraph(tx, *, element_id: str) -> dict | None:
         "neighbors": neighbors,
         "edges": edges,
     }
+
+
+_ASSET_CVES_QUERY = """
+MATCH (c:CVE)-[:AFFECTS]->(a:Asset {asset_key: $asset_key})
+WHERE NOT coalesce(c.is_revoked, false)
+RETURN elementId(c) AS id, c.cve_id AS cve_id, c.description AS description,
+       c.cvss_score AS cvss_score, c.epss_score AS epss_score,
+       c.exploited_in_wild AS exploited_in_wild, c.severity_score AS severity_score,
+       c.severity_band AS severity_band
+ORDER BY c.severity_score IS NULL, c.severity_score DESC
+"""
+
+
+def fetch_cves_for_asset(tx, *, asset_key: str) -> list[dict]:
+    return [dict(r) for r in tx.run(_ASSET_CVES_QUERY, asset_key=asset_key)]
+
+
+_ALL_ASSET_CVES_QUERY = """
+MATCH (c:CVE)-[:AFFECTS]->(:Asset)
+WHERE NOT coalesce(c.is_revoked, false)
+WITH DISTINCT c
+RETURN elementId(c) AS id, c.cve_id AS cve_id, c.description AS description,
+       c.cvss_score AS cvss_score, c.epss_score AS epss_score,
+       c.exploited_in_wild AS exploited_in_wild, c.severity_score AS severity_score,
+       c.severity_band AS severity_band
+ORDER BY c.severity_score IS NULL, c.severity_score DESC
+"""
+
+
+def fetch_cves_for_all_assets(tx) -> list[dict]:
+    return [dict(r) for r in tx.run(_ALL_ASSET_CVES_QUERY)]
+
+
+_KNOWN_VENDOR_PRODUCTS_QUERY = """
+MATCH (m:CPEMatch)
+WHERE m.vendor IS NOT NULL AND m.product IS NOT NULL
+RETURN DISTINCT m.vendor AS vendor, m.product AS product
+ORDER BY vendor, product
+LIMIT $limit
+"""
+
+
+def fetch_known_vendor_products(tx, *, limit: int = 2000) -> list[dict]:
+    """Distinct (vendor, product) pairs seen in real NVD data, for the Assets page's
+    autocomplete (design spec Decision 9) -- avoids a free-text vendor/product that can
+    never match anything in CPEMatch."""
+    return [dict(r) for r in tx.run(_KNOWN_VENDOR_PRODUCTS_QUERY, limit=limit)]
