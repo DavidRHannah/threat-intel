@@ -1,3 +1,4 @@
+from src.common.graph.publish import publish_node_write
 from src.common.graph.writer import merge_relationship
 
 
@@ -48,6 +49,11 @@ def resync_matches(tx, *, cve_key: dict, matches: list[dict]) -> dict:
         )
         if outcome == "created":
             created.append(match["match_criteria_id"])
+
+    for match_id in created:
+        publish_node_write(
+            label="CPEMatch", key={"match_criteria_id": match_id}, changed_fields=["created"]
+        )
 
     wanted = {m["match_criteria_id"] for m in matches}
     match_cve = ", ".join(f"{k}: $cve_{k}" for k in cve_key)

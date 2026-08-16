@@ -230,9 +230,18 @@ def test_pulse_merges_iocs_lazy_cve_and_indicates_edges(driver, aws):
         assert b["start_label"] == "IOC"
         assert b["end_label"] == "CVE"
         assert b["event_time"] == now.isoformat()
-    assert len(node_bodies) == 1
-    assert node_bodies[0]["key"] == {"cve_id": "CVE-2026-2002"}
-    assert node_bodies[0]["changed_fields"] == ["cvss_score"]
+    # enrich_cve's own cvss_score node_write for the CVE, plus one CPEMatch node_write
+    # per newly-created match (Task 7's resync_matches -> publish_node_write hookup) --
+    # the fixture's CVE carries two cpeMatch entries.
+    cve_node_bodies = [b for b in node_bodies if b["label"] == "CVE"]
+    cpe_match_node_bodies = [b for b in node_bodies if b["label"] == "CPEMatch"]
+    assert len(cve_node_bodies) == 1
+    assert cve_node_bodies[0]["key"] == {"cve_id": "CVE-2026-2002"}
+    assert cve_node_bodies[0]["changed_fields"] == ["cvss_score"]
+    assert {b["key"]["match_criteria_id"] for b in cpe_match_node_bodies} == {
+        "1111-2222-3333", "4444-5555-6666",
+    }
+    assert all(b["changed_fields"] == ["created"] for b in cpe_match_node_bodies)
 
 
 def test_missing_source_falls_back_to_default_credibility(driver, aws):

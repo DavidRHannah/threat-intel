@@ -107,6 +107,16 @@ def _clear_config_cache(monkeypatch):
     config.get_config.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def _mock_structural_edges_publish():
+    # resync_matches (src/common/graph/structural_edges.py) publishes a node_write for
+    # each newly-created CPEMatch (Task 7). Not under test here -- this file's own
+    # `patch("src.collection.rest.nvd.publish_node_write")` calls only cover nvd.py's
+    # own CVE-level publish, not structural_edges' separate import of the same name.
+    with patch("src.common.graph.structural_edges.publish_node_write"):
+        yield
+
+
 @pytest.fixture
 def driver():
     d = get_driver()

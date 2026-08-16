@@ -61,8 +61,14 @@ class ScriptedHttpClient:
 
 @pytest.fixture(autouse=True)
 def _no_publish():
-    """`enrich_cve` publishes a node_write on a CVSS change; no SNS in these tests."""
-    with patch("src.collection.rest.nvd.publish_node_write"):
+    """`enrich_cve` publishes a node_write on a CVSS change; no SNS in these tests.
+    Also covers structural_edges.publish_node_write (Task 7), which resync_matches
+    fires for each newly-created CPEMatch -- a separate import of the same function,
+    not caught by patching nvd.py's own reference."""
+    with (
+        patch("src.collection.rest.nvd.publish_node_write"),
+        patch("src.common.graph.structural_edges.publish_node_write"),
+    ):
         yield
 
 
