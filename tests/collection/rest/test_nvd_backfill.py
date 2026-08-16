@@ -102,15 +102,24 @@ def _prop(driver, cve_id: str, name: str):
 
 def test_work_list_finds_only_never_enriched_stubs(driver):
     """`last_modified_date` is the enrichment watermark: its absence means NVD has never
-    written this node. An already-enriched CVE must not be re-fetched -- that is what
-    makes a re-run after a crash resume rather than restart."""
+    written this node. A fully caught-up CVE (with MATCHES edges) must not be
+    re-fetched -- that is what makes a re-run after a crash resume rather than restart."""
     _stub(driver, "CVE-2026-7001")
-    _stub(driver, "CVE-2026-7002", last_modified_date="2026-01-01T00:00:00.000")
+    with driver.session() as s:
+        s.run(
+            "MERGE (c:CVE {cve_id:'CVE-2026-7002'}) "
+            "SET c.last_modified_date = '2026-01-01T00:00:00.000' "
+            "MERGE (m:CPEMatch {match_criteria_id:'MC-Y'}) "
+            "MERGE (c)-[:MATCHES]->(m)"
+        ).consume()
 
     ids = find_unenriched_cve_ids(driver)
 
     assert "CVE-2026-7001" in ids
     assert "CVE-2026-7002" not in ids
+
+    with driver.session() as s:
+        s.run("MATCH (m:CPEMatch {match_criteria_id:'MC-Y'}) DETACH DELETE m").consume()
 
 
 def test_work_list_excludes_cves_nvd_does_not_have(driver):
@@ -119,6 +128,31 @@ def test_work_list_excludes_cves_nvd_does_not_have(driver):
     _stub(driver, "CVE-2026-7003", nvd_not_found_at="2026-08-16T00:00:00+00:00")
 
     assert "CVE-2026-7003" not in find_unenriched_cve_ids(driver)
+
+
+def test_find_unenriched_cve_ids_includes_already_enriched_cves_missing_cpe_matches(driver):
+    with driver.session() as s:
+        # Old-shape: already has last_modified_date (enriched before this feature existed)
+        # but no CPEMatch nodes.
+        s.run(
+            "MERGE (c:CVE {cve_id:'CVE-2026-7001'}) "
+            "SET c.last_modified_date = '2026-01-01T00:00:00Z'"
+        ).consume()
+        # Fully caught up: has both.
+        s.run(
+            "MERGE (c:CVE {cve_id:'CVE-2026-7002'}) "
+            "SET c.last_modified_date = '2026-01-01T00:00:00Z' "
+            "MERGE (m:CPEMatch {match_criteria_id:'MC-X'}) "
+            "MERGE (c)-[:MATCHES]->(m)"
+        ).consume()
+    ids = find_unenriched_cve_ids(driver)
+    assert "CVE-2026-7001" in ids
+    assert "CVE-2026-7002" not in ids
+    with driver.session() as s:
+        s.run(
+            "MATCH (c:CVE) WHERE c.cve_id IN ['CVE-2026-7001','CVE-2026-7002'] DETACH DELETE c"
+        ).consume()
+        s.run("MATCH (m:CPEMatch {match_criteria_id:'MC-X'}) DETACH DELETE m").consume()
 
 
 def test_work_list_honours_limit(driver):

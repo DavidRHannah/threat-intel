@@ -109,9 +109,12 @@ def rate_limiter_for(*, has_api_key: bool, **kwargs) -> RateLimiter:
 # absence is an exact marker for "no NVD read has ever landed on this node". Ordering is
 # newest-id-first so a partial run covers the CVEs most likely to matter today, and so a
 # --limit run is reproducible rather than arbitrary.
+# Task 3: also re-touch CVEs that were enriched before CPEMatch existed (have
+# last_modified_date but zero MATCHES edges).
 _WORK_LIST = """
 MATCH (c:CVE)
-WHERE c.last_modified_date IS NULL AND c.nvd_not_found_at IS NULL
+WHERE c.nvd_not_found_at IS NULL
+  AND (c.last_modified_date IS NULL OR NOT EXISTS { (c)-[:MATCHES]->(:CPEMatch) })
 RETURN c.cve_id AS cve_id
 ORDER BY c.cve_id DESC
 """
