@@ -108,6 +108,51 @@ export async function deleteWatchlist(id) {
 }
 
 /* ============================================
+   Asset API Hooks
+   ============================================ */
+
+export function useAssets() {
+  return useQuery({
+    queryKey: ['assets'],
+    queryFn: () => client.get('/assets').then(r => r.data),
+    staleTime: 60 * 1000,
+  });
+}
+
+export async function createAsset(data) {
+  return client.post('/assets', data).then(r => r.data);
+}
+
+export async function deleteAsset(assetKey) {
+  return client.delete(`/assets/${encodeURIComponent(assetKey)}`).then(r => r.data);
+}
+
+export function useAssetCves(assetKey) {
+  return useQuery({
+    queryKey: ['assets', assetKey, 'cves'],
+    queryFn: () => client.get(`/assets/${encodeURIComponent(assetKey)}/cves`).then(r => r.data),
+    enabled: !!assetKey,
+    staleTime: 2 * 60 * 1000,
+  });
+}
+
+export function useAllAssetsCves() {
+  return useQuery({
+    queryKey: ['assets', 'cves'],
+    queryFn: () => client.get('/assets/cves').then(r => r.data),
+    staleTime: 2 * 60 * 1000,
+  });
+}
+
+export function useKnownVendorProducts() {
+  return useQuery({
+    queryKey: ['assets', 'known-vendor-products'],
+    queryFn: () => client.get('/assets/known-vendor-products').then(r => r.data),
+    staleTime: 30 * 60 * 1000, // real NVD vendor/product data changes slowly
+  });
+}
+
+/* ============================================
    Briefing API Hooks
    ============================================ */
 
