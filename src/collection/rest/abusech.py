@@ -45,6 +45,7 @@ from src.common import natural_keys
 from src.common.config import get_config
 from src.common.graph.assertion_edges import upsert_authoritative_assertion
 from src.common.graph.publish import publish_graph_write
+from src.common.graph.writer import _check_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +179,7 @@ def _urlhaus_url() -> str:
 def process_urlhaus(driver, http_client: _HttpClient) -> int:
     """Fetch URLhaus's recent-activity window and MERGE each URL as a plain IOC.
     Returns the count of entries processed."""
-    response = http_client.post(_urlhaus_url(), headers=_auth_headers(URLHAUS_SOURCE_ID))
+    response = http_client.get(_urlhaus_url(), headers=_auth_headers(URLHAUS_SOURCE_ID))
     body = handle_response(response, alert_fn=_alert, schema_validator=_schema_valid_query_status_ok)
 
     entries = UrlhausNormalizer().parse(body)
@@ -322,13 +323,6 @@ class ThreatFoxNormalizer:
         return upserts
 
 
-def _merge_malware_family_tx(tx, merge_key: str, properties: dict) -> None:
-    tx.run(
-        "MERGE (m:MalwareFamily {merge_key: $key}) SET m += $props",
-        key=merge_key, props=properties,
-    ).consume()
-
-
 def _write_threatfox_edge_tx(tx, *, entry: ParsedThreatFoxEntry, now) -> str:
     # Read Source.credibility_score inside this same transaction (never a separate round
     # trip) so it can't observe a stale/uncommitted Source state relative to the edge
@@ -352,23 +346,67 @@ def _threatfox_url() -> str:
     return get_config("threatfox_api_base_url", default="https://threatfox-api.abuse.ch/api/v1/")
 
 
+def _bulk_merge_threatfox_nodes_tx(tx, label: str, key_prop: str, rows: list[dict]) -> None:
+    """rows: [{"key": <natural key value>, "props": {...}}]. One UNWIND round trip for
+    the whole batch instead of one `execute_write` per node -- see process_threatfox's
+    docstring. Mirrors `src.collection.stix.attck_sync._bulk_merge_nodes_tx`; not shared
+    across modules per this file's own "no unified abuse.ch client" design decision."""
+    _check_identifier(label, "label")
+    _check_identifier(key_prop, "key property")
+    tx.run(
+        f"UNWIND $rows AS row MERGE (n:{label} {{{key_prop}: row.key}}) SET n += row.props",
+        rows=rows,
+    ).consume()
+
+
+def _batches(rows: list, batch_size: int):
+    for i in range(0, len(rows), batch_size):
+        yield rows[i : i + batch_size]
+
+
 def process_threatfox(driver, http_client: _HttpClient, *, now) -> int:
     """Fetch ThreatFox's recent IOCs, MERGE each as an IOC + its MalwareFamily, and write
     the implied `MalwareFamily`->`IOC` edge (`HAS_SAMPLE` for a hash IOC,
     `COMMUNICATES_WITH` for a network IOC) via `upsert_authoritative_assertion`,
     announced via `publish_graph_write`. Returns the count of entries processed.
+
+    Node writes (IOC + MalwareFamily) are batched via `UNWIND`, `threatfox_batch_size`
+    config knob (default 500) -- confirmed live that the old one-`execute_write`-per-
+    entry shape hit the Lambda's full 300s timeout partway through a single day's
+    ~800-1000 entries (216+402 edges written, run killed mid-run). Same
+    one-round-trip-per-row shape as the EPSS and MITRE ATT&CK bugs already fixed
+    elsewhere in this repo. Edge writes stay one `execute_write` per entry: each needs
+    its own `created`/`updated`/`matched` outcome for `publish_graph_write` (L4's novelty
+    stamping is a deny-list on `outcome != "matched"`, so this can't be coarsened to a
+    batch-level outcome without breaking novelty scoring downstream).
     """
-    response = http_client.post(_threatfox_url(), headers=_auth_headers(THREATFOX_SOURCE_ID))
+    response = http_client.post(
+        _threatfox_url(),
+        json={"query": "get_iocs", "days": int(get_config("threatfox_days", default="1"))},
+        headers=_auth_headers(THREATFOX_SOURCE_ID),
+    )
     body = handle_response(response, alert_fn=_alert, schema_validator=_schema_valid_query_status_ok)
 
     entries = ThreatFoxNormalizer().parse(body)
+    batch_size = int(get_config("threatfox_batch_size", default="500"))
+
+    ioc_rows = [
+        {
+            "key": natural_keys.ioc_key(e.value, e.ioc_type),
+            "props": {"value": e.value, "ioc_type": e.ioc_type, **e.ioc_properties},
+        }
+        for e in entries
+    ]
+    family_rows = [
+        {"key": e.malware_merge_key, "props": e.malware_properties} for e in entries
+    ]
+
     with driver.session() as session:
-        for entry in entries:
+        for chunk in _batches(ioc_rows, batch_size):
+            session.execute_write(_bulk_merge_threatfox_nodes_tx, "IOC", "value_type_key", chunk)
+        for chunk in _batches(family_rows, batch_size):
             session.execute_write(
-                _merge_ioc_tx, entry.value, entry.ioc_type, entry.ioc_properties
-            )
-            session.execute_write(
-                _merge_malware_family_tx, entry.malware_merge_key, entry.malware_properties
+                _bulk_merge_threatfox_nodes_tx, "MalwareFamily", "merge_key", chunk
             )
 
     with driver.session() as session:

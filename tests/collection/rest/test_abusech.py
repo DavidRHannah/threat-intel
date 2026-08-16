@@ -62,8 +62,10 @@ class FakeHttpClient:
         self.calls.append({"method": "get", "url": url, "params": params or {}, "headers": headers or {}})
         return self._response
 
-    def post(self, url, data=None, headers=None):
-        self.calls.append({"method": "post", "url": url, "data": data or {}, "headers": headers or {}})
+    def post(self, url, data=None, json=None, headers=None):
+        self.calls.append(
+            {"method": "post", "url": url, "data": data or {}, "json": json or {}, "headers": headers or {}}
+        )
         return self._response
 
 
@@ -187,6 +189,15 @@ class TestUrlhaus:
         client = FakeHttpClient(FakeResponse(_load("urlhaus_recent.json")))
         process_urlhaus(driver, client)
         assert client.calls[0]["headers"]["Auth-Key"] == "test-urlhaus-key"
+
+    def test_uses_get_not_post(self, driver):
+        # abuse.ch's /v1/urls/recent/ endpoint requires GET -- a live POST against it
+        # returns HTTP 405 {"query_status": "http_get_expected"}, confirmed against the
+        # real API. process_urlhaus had always called http_client.post, so this source
+        # never worked in production despite every test here passing.
+        client = FakeHttpClient(FakeResponse(_load("urlhaus_recent.json")))
+        process_urlhaus(driver, client)
+        assert client.calls[0]["method"] == "get"
 
     def test_401_routes_through_handle_response(self, driver):
         client = FakeHttpClient(FakeResponse({}, status_code=401))
@@ -348,6 +359,19 @@ class TestThreatFox:
         process_threatfox(driver, client, now=datetime.now(timezone.utc))
         assert client.calls[0]["headers"]["Auth-Key"] == "test-threatfox-key"
 
+    def test_sends_get_iocs_query_body(self, driver, aws):
+        # A live POST with no body against threatfox-api.abuse.ch returns
+        # {"query_status": "no_json", "data": "Your request did not contain any JSON
+        # data"} -- it needs a genuine JSON body, not form-encoded data. httpx's
+        # `data=` kwarg form-encodes, which the real API also rejects with the same
+        # "no_json" error (confirmed against the live API); only httpx's `json=` kwarg
+        # sends real JSON. process_threatfox had never sent a body at all, so this
+        # source never worked in production despite every test here passing against a
+        # fixture response the real API would never actually return.
+        client = FakeHttpClient(FakeResponse(_load("threatfox_recent.json")))
+        process_threatfox(driver, client, now=datetime.now(timezone.utc))
+        assert client.calls[0]["json"]["query"] == "get_iocs"
+
     def test_missing_source_falls_back_to_default_credibility(self, driver, aws):
         # No Source node seeded at all -- must fall back rather than raise or block the write.
         client = FakeHttpClient(FakeResponse(_load("threatfox_recent.json")))
@@ -381,6 +405,107 @@ class TestThreatFox:
         client = FakeHttpClient(FakeResponse({"query_status": "no_results"}, status_code=200))
         with pytest.raises(NoRetryError):
             process_threatfox(driver, client, now=datetime.now(timezone.utc))
+
+
+class _CountingSession:
+    """Wraps one real, kept-open Neo4j session, counting `execute_write` calls -- the
+    round-trip unit `process_threatfox` issues once per node-write batch plus once per
+    edge (edges stay per-row so `publish_graph_write` gets an accurate outcome, per-row
+    `upsert_authoritative_assertion` behavior). Mirrors
+    `tests/collection/stix/test_attck_sync.py::_CountingSession`; production code opens
+    more than one `with driver.session()` block per call, so `__exit__` deliberately does
+    NOT close the underlying session -- the caller closes it once, after the call
+    completes."""
+
+    def __init__(self, session):
+        self._session = session
+        self.calls = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def execute_write(self, *args, **kwargs):
+        self.calls += 1
+        return self._session.execute_write(*args, **kwargs)
+
+
+def _synthetic_threatfox_body(n: int) -> dict:
+    return {
+        "query_status": "ok",
+        "data": [
+            {
+                "ioc": f"tfbatch-{i}.example/payload",
+                "ioc_type": "url",
+                "malware_printable": f"TFBatchFamily{i}",
+                "threat_type": "payload_delivery",
+                "confidence_level": 80,
+                "first_seen": "2026-07-20 00:00:00 UTC",
+            }
+            for i in range(n)
+        ],
+    }
+
+
+class TestThreatFoxBatching:
+    """Regression coverage for the production bug: `process_threatfox` called
+    `execute_write` twice per entry for node MERGEs (IOC + MalwareFamily), which against
+    remote AuraDB could not finish ThreatFox's ~800-1000/day entries inside the Lambda
+    timeout -- confirmed live, a real invocation hit the full 300s timeout having written
+    only 216+402 of the run's edges (see CLAUDE.md Current State). Same one-round-trip-
+    per-row shape as the EPSS and MITRE ATT&CK bugs already fixed elsewhere in this repo.
+    """
+
+    def test_batches_node_writes_instead_of_one_execute_write_per_entry(
+        self, monkeypatch, driver, aws
+    ):
+        monkeypatch.setenv("CROSSROADS_THREATFOX_BATCH_SIZE", "3")
+        config.get_config.cache_clear()
+
+        n = 7
+        client = FakeHttpClient(FakeResponse(_synthetic_threatfox_body(n)))
+
+        real_session = driver.session
+        underlying = real_session()
+        counting = _CountingSession(underlying)
+        monkeypatch.setattr(driver, "session", lambda *a, **k: counting)
+        try:
+            count = process_threatfox(driver, client, now=datetime.now(timezone.utc))
+        finally:
+            monkeypatch.setattr(driver, "session", real_session)
+            underlying.close()
+            config.get_config.cache_clear()
+
+        assert count == n
+        # Node writes: 7 IOC rows + 7 MalwareFamily rows, batched at 3/round-trip:
+        # ceil(7/3) + ceil(7/3) == 3 + 3 == 6. Edge writes stay one execute_write per
+        # entry (7) so each gets its own outcome for publish_graph_write. Total 13 --
+        # not 21 (the old one-per-node-plus-one-per-edge shape).
+        assert counting.calls == 13
+
+        with driver.session() as s:
+            iocs = s.run(
+                "MATCH (i:IOC) WHERE i.value STARTS WITH 'tfbatch-' RETURN count(i) AS c"
+            ).single()["c"]
+            families = s.run(
+                "MATCH (m:MalwareFamily) WHERE m.merge_key STARTS WITH 'tfbatchfamily' "
+                "RETURN count(m) AS c"
+            ).single()["c"]
+            edges = s.run(
+                "MATCH (:MalwareFamily)-[r:COMMUNICATES_WITH]->(:IOC) "
+                "WHERE r.feed_sources = ['threatfox'] AND startNode(r).merge_key "
+                "STARTS WITH 'tfbatchfamily' RETURN count(r) AS c"
+            ).single()["c"]
+            s.run(
+                "MATCH (n) WHERE (n:IOC AND n.value STARTS WITH 'tfbatch-') "
+                "OR (n:MalwareFamily AND n.merge_key STARTS WITH 'tfbatchfamily') "
+                "DETACH DELETE n"
+            ).consume()
+        assert iocs == n
+        assert families == n
+        assert edges == n
 
 
 _NOW = datetime(2026, 7, 21, 0, 0, tzinfo=timezone.utc)
