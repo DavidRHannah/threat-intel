@@ -15,6 +15,7 @@ const ThreatsPage = lazy(() => import('./pages/ThreatsPage'));
 const ActorsPage = lazy(() => import('./pages/ActorsPage'));
 const SearchPage = lazy(() => import('./pages/SearchPage'));
 const WatchlistsPage = lazy(() => import('./pages/WatchlistsPage'));
+const AssetsPage = lazy(() => import('./pages/AssetsPage'));
 const BriefingsPage = lazy(() => import('./pages/BriefingsPage'));
 const EntityDetailPage = lazy(() => import('./pages/EntityDetailPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
@@ -93,6 +94,14 @@ export default function App() {
                     element={
                       <Suspense fallback={<PageLoader />}>
                         <WatchlistsPage />
+                      </Suspense>
+                    }
+                  />
+                  <Route
+                    path="assets"
+                    element={
+                      <Suspense fallback={<PageLoader />}>
+                        <AssetsPage />
                       </Suspense>
                     }
                   />

@@ -5,12 +5,13 @@ import {
   LayoutDashboard, 
   Search, 
   Users, 
-  Grid3x3, 
-  Star, 
-  FileText, 
+  Grid3x3,
+  Star,
+  FileText,
   Settings,
   Menu,
-  Shield
+  Shield,
+  Boxes
 } from 'lucide-react';
 import { ThemeToggle } from '../common/ThemeToggle';
 import './Sidebar.css';
@@ -23,6 +24,7 @@ export function Sidebar({ collapsed, setCollapsed }) {
     { to: '/actors', icon: Users, label: 'Actors' },
     { to: '/heatmap', icon: Grid3x3, label: 'Heatmap' },
     { to: '/watchlists', icon: Star, label: 'Watchlists' },
+    { to: '/assets', icon: Boxes, label: 'Assets' },
     { to: '/briefings', icon: FileText, label: 'Briefings' },
     { to: '/settings', icon: Settings, label: 'Settings' }
   ];
