@@ -36,9 +36,9 @@ def _actions_granted_to(stack: DeliveryStack, template: Template, role) -> set[s
     return actions
 
 
-def test_synthesizes_eight_lambdas():
+def test_synthesizes_nine_lambdas():
     _, template = _synth_stack()
-    template.resource_count_is("AWS::Lambda::Function", 8)
+    template.resource_count_is("AWS::Lambda::Function", 9)
 
 
 def test_api_gateway_has_jwt_authorizer():
