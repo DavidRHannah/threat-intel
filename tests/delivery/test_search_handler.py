@@ -45,6 +45,19 @@ def test_search_matches_actor_by_name_substring(driver):
     assert any(r["_type"] == "actor" and r["name"] == "APT Search Test" for r in rows)
 
 
+def test_search_matches_campaign_by_name_substring(driver):
+    with driver.session() as session:
+        session.run(
+            "CREATE (:Campaign {merge_key: 'op-search-test', name: 'Operation Search Test', "
+            "  relevance_score: 0.5, test_fixture: true})"
+        )
+    with driver.session() as session:
+        rows = session.execute_read(
+            lambda tx: fetch_search_results(tx, query="search test", limit=20)
+        )
+    assert any(r["_type"] == "campaign" and r["name"] == "Operation Search Test" for r in rows)
+
+
 def test_search_no_match_returns_empty_list(driver):
     with driver.session() as session:
         rows = session.execute_read(

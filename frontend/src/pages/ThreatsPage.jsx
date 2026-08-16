@@ -37,7 +37,14 @@ export default function ThreatsPage() {
     data.sort((a, b) => {
       let valA = a[sortField];
       let valB = b[sortField];
-      if (typeof valA === 'string') {
+
+      // Nulls (e.g. a CVE whose published_date was never backfilled from NVD) always sort
+      // last, regardless of sort direction -- same convention as fetch_top_cves's SQL.
+      if (valA == null && valB == null) return 0;
+      if (valA == null) return 1;
+      if (valB == null) return -1;
+
+      if (typeof valA === 'string' && typeof valB === 'string') {
         valA = valA.toLowerCase();
         valB = valB.toLowerCase();
       }

@@ -10,7 +10,7 @@ const PAGE_TITLES = {
   '/': 'Dashboard',
   '/search': 'Search',
   '/threats': 'Threats',
-  '/actors': 'Actors & Malware',
+  '/actors': 'Actors, Malware & Campaigns',
   '/heatmap': 'ATT&CK Heatmap',
   '/watchlists': 'Watchlists',
   '/briefings': 'Briefings',

@@ -1,5 +1,7 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { X, ExternalLink, Activity } from 'lucide-react';
+import { EntityBadge } from '../common/EntityBadge';
 import './TechniqueDrawer.css';
 
 export function TechniqueDrawer({ technique, onClose }) {
@@ -40,9 +42,12 @@ export function TechniqueDrawer({ technique, onClose }) {
           <div className="drawer-section">
             <h3 className="section-title">Top Exploiters ({technique.exploiter_count})</h3>
             <ul className="exploiter-list">
-              {technique.top_exploiters && technique.top_exploiters.map((actor, idx) => (
-                <li key={idx} className="exploiter-item">
-                  <span className="badge badge--actor">{actor}</span>
+              {technique.top_exploiters && technique.top_exploiters.map((exploiter) => (
+                <li key={exploiter.id} className="exploiter-item">
+                  <Link to={`/entity/${exploiter.type}/${exploiter.id}`} className="exploiter-link">
+                    <EntityBadge type={exploiter.type} />
+                    <span>{exploiter.name}</span>
+                  </Link>
                 </li>
               ))}
               {technique.top_exploiters?.length === 0 && (

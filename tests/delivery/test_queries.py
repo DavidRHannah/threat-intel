@@ -11,6 +11,7 @@ from src.delivery.queries import (
     fetch_stats,
     fetch_subgraph,
     fetch_top_actors,
+    fetch_top_campaigns,
     fetch_top_cves,
     fetch_top_malware,
 )
@@ -110,6 +111,21 @@ def test_fetch_top_malware_orders_by_relevance_desc(driver):
         )
     with driver.session() as session:
         rows = session.execute_read(lambda tx: fetch_top_malware(tx, limit=10))
+    assert [r["name"] for r in rows] == ["High", "Low"]
+
+
+def test_fetch_top_campaigns_orders_by_relevance_desc_and_excludes_revoked(driver):
+    with driver.session() as session:
+        session.run(
+            "CREATE (:Campaign {merge_key: 'c-low', name: 'Low', relevance_score: 0.2, "
+            "  start_date: '2021-01-01', end_date: '2021-06-01', test_fixture: true})"
+            "CREATE (:Campaign {merge_key: 'c-high', name: 'High', relevance_score: 0.8, "
+            "  start_date: '2022-01-01', end_date: null, test_fixture: true})"
+            "CREATE (:Campaign {merge_key: 'c-revoked', name: 'Revoked', "
+            "  relevance_score: 0.99, is_revoked: true, test_fixture: true})"
+        )
+    with driver.session() as session:
+        rows = session.execute_read(lambda tx: fetch_top_campaigns(tx, limit=10))
     assert [r["name"] for r in rows] == ["High", "Low"]
 
 

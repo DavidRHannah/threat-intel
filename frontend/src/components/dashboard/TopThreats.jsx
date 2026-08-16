@@ -85,9 +85,6 @@ export function TopThreats() {
                   </span>
                   <span className="badge badge--unknown">{actor.motivation}</span>
                 </div>
-                <div className="threat-item__stats">
-                  <span className="threat-item__stat">Relevance: {formatScore(actor.relevance_score, 2)}</span>
-                </div>
               </Link>
             ))}
           </div>
@@ -100,9 +97,6 @@ export function TopThreats() {
                 <div className="threat-item__main">
                   <span className="threat-item__name">{malware.name}</span>
                   <span className="badge badge--unknown">{malware.malware_type}</span>
-                </div>
-                <div className="threat-item__stats">
-                  <span className="threat-item__stat">Relevance: {formatScore(malware.relevance_score, 2)}</span>
                 </div>
               </Link>
             ))}

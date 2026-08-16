@@ -14,6 +14,7 @@ from src.delivery.queries import (
     fetch_stats,
     fetch_subgraph,
     fetch_top_actors,
+    fetch_top_campaigns,
     fetch_top_cves,
     fetch_top_malware,
 )
@@ -72,6 +73,15 @@ def top_malware_handler(event, context) -> dict:
     with driver.session() as session:
         rows = session.execute_read(lambda tx: fetch_top_malware(tx, limit=limit))
     return _response(200, {"malware": rows})
+
+
+def top_campaigns_handler(event, context) -> dict:
+    knobs = DeliveryKnobs.from_config()
+    limit = _limit_param(event, knobs.dashboard_default_limit)
+    driver = get_driver()
+    with driver.session() as session:
+        rows = session.execute_read(lambda tx: fetch_top_campaigns(tx, limit=limit))
+    return _response(200, {"campaigns": rows})
 
 
 def recent_stories_handler(event, context) -> dict:

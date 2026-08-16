@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
+import { formatTactics, primaryTactic } from '../../utils/formatters';
 import './EvidenceTabs.css';
 
 export function EvidenceTabs({ subgraph }) {
@@ -14,7 +16,8 @@ export function EvidenceTabs({ subgraph }) {
 
   const articles = getNeighborsByType(['article']);
   const actors = getNeighborsByType(['threat_actor', 'actor']);
-  const ttps = getNeighborsByType(['ttp']);
+  const ttps = getNeighborsByType(['ttp'])
+    .sort((a, b) => primaryTactic(a.tactic).localeCompare(primaryTactic(b.tactic)) || (a.name || '').localeCompare(b.name || ''));
   const iocs = getNeighborsByType(['ioc']);
 
   return (
@@ -56,7 +59,7 @@ export function EvidenceTabs({ subgraph }) {
                 const edge = edges.find(e => e.target === n.id || e.source === n.id);
                 return (
                   <tr key={n.id}>
-                    <td>{n.name}</td>
+                    <td><Link to={`/entity/${n.type}/${n.id}`}>{n.name}</Link></td>
                     <td>{edge?.confidence ? (edge.confidence * 100).toFixed(0) + '%' : 'N/A'}</td>
                     <td>
                       {edge?.origin?.map((orig, i) => (
@@ -78,8 +81,8 @@ export function EvidenceTabs({ subgraph }) {
               {ttps.map(n => (
                 <tr key={n.id}>
                   <td>{n.mitre_id}</td>
-                  <td>{n.name}</td>
-                  <td>{n.tactic}</td>
+                  <td><Link to={`/entity/${n.type}/${n.id}`}>{n.name}</Link></td>
+                  <td>{formatTactics(n.tactic)}</td>
                 </tr>
               ))}
               {ttps.length === 0 && <tr><td colSpan="3">No associated TTPs found.</td></tr>}

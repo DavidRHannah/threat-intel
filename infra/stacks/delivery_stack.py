@@ -118,6 +118,9 @@ class DeliveryStack(Stack):
         self.top_malware_fn = _fn(
             "TopMalwareFunction", "src.delivery.dashboard_handler.top_malware_handler"
         )
+        self.top_campaigns_fn = _fn(
+            "TopCampaignsFunction", "src.delivery.dashboard_handler.top_campaigns_handler"
+        )
         self.recent_stories_fn = _fn(
             "RecentStoriesFunction", "src.delivery.dashboard_handler.recent_stories_handler"
         )
@@ -148,6 +151,7 @@ class DeliveryStack(Stack):
             ("/dashboard/top-cves", self.top_cves_fn, "TopCvesIntegration"),
             ("/dashboard/top-actors", self.top_actors_fn, "TopActorsIntegration"),
             ("/dashboard/top-malware", self.top_malware_fn, "TopMalwareIntegration"),
+            ("/dashboard/top-campaigns", self.top_campaigns_fn, "TopCampaignsIntegration"),
             ("/dashboard/recent-stories", self.recent_stories_fn, "RecentStoriesIntegration"),
             ("/dashboard/subgraph/{id}", self.subgraph_fn, "SubgraphIntegration"),
             ("/dashboard/ttp-heatmap", self.ttp_heatmap_fn, "TtpHeatmapIntegration"),

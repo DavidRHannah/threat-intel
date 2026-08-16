@@ -83,3 +83,21 @@ export function stripCitations(text) {
   if (!text) return text;
   return text.replace(/\s?\(Citation:[^)]*\)/g, '').trim();
 }
+
+/* TTP tactics */
+
+// TTP.tactic is a LIST of STIX kill-chain phase-name slugs (a technique can belong to more
+// than one) -- rendering the array directly with `{n.tactic}` mashes the slugs together with
+// no separator, since React joins array children with nothing between them.
+export function formatTactics(tactics) {
+  if (!tactics || tactics.length === 0) return '—';
+  return tactics.map(t => t.split('-').map(w => w[0].toUpperCase() + w.slice(1)).join(' ')).join(', ');
+}
+
+// Sort key for grouping TTPs by tactic: a multi-tactic TTP sorts under its
+// alphabetically-first tactic, so it lands in a single, consistent group rather than
+// scattering across every tactic it belongs to.
+export function primaryTactic(tactics) {
+  if (!tactics || tactics.length === 0) return '';
+  return [...tactics].sort()[0];
+}

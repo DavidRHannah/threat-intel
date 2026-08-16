@@ -12,6 +12,7 @@ import json
 
 from src.common.neo4j_driver import get_driver
 from src.delivery.knobs import DeliveryKnobs
+from src.delivery.queries import entity_subgraph_type
 
 _TACTICS = [
     {"id": "TA0043", "name": "Reconnaissance"},
@@ -57,7 +58,8 @@ WHERE NOT coalesce(t.is_revoked, false)
 OPTIONAL MATCH (exploiter)-[u:USES]->(t)
 WHERE exploiter IS NULL OR NOT coalesce(exploiter.is_revoked, false)
 WITH t, collect(CASE WHEN exploiter IS NULL THEN null ELSE
-    {name: exploiter.name, relevance: coalesce(exploiter.relevance_score, 0.0),
+    {id: elementId(exploiter), labels: labels(exploiter), name: exploiter.name,
+     relevance: coalesce(exploiter.relevance_score, 0.0),
      last_confirmed: u.last_confirmed} END) AS raw_exploiters
 RETURN t.technique_id AS id, t.name AS name, t.tactic AS tactics,
        [x IN raw_exploiters WHERE x IS NOT NULL] AS exploiters
@@ -81,7 +83,7 @@ def fetch_ttp_heatmap(tx, *, halflife_days: float) -> list[dict]:
                 recency_weight = 0.5 ** (age_days / halflife_days)
             weight_sum += ex["relevance"] * recency_weight
         top_exploiters = [
-            ex["name"]
+            {"id": ex["id"], "type": entity_subgraph_type(ex["labels"]), "name": ex["name"]}
             for ex in sorted(exploiters, key=lambda e: e["relevance"], reverse=True)[:3]
         ]
         tactic_ids = [

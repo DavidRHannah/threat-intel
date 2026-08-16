@@ -42,6 +42,15 @@ export function useTopMalware(limit = 10) {
   });
 }
 
+export function useTopCampaigns(limit = 10) {
+  return useQuery({
+    queryKey: ['dashboard', 'top-campaigns', limit],
+    queryFn: () => client.get('/dashboard/top-campaigns', { params: { limit } }).then(r => r.data),
+    refetchInterval: 5 * 60 * 1000,
+    staleTime: 2 * 60 * 1000,
+  });
+}
+
 export function useRecentStories(limit = 20) {
   return useQuery({
     queryKey: ['dashboard', 'recent-stories', limit],

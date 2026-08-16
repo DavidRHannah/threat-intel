@@ -126,26 +126,6 @@
   text-transform: uppercase;
 }
 
-.relevance-bar {
-  height: 4px;
-  background: var(--bg-tertiary);
-  border-radius: var(--radius-full);
-  margin-top: auto;
-  overflow: hidden;
-}
-
-.relevance-fill {
-  height: 100%;
-  background: var(--color-primary);
-  border-radius: var(--radius-full);
-}
-
-.relevance-label {
-  font-size: var(--font-size-xs);
-  color: var(--text-secondary);
-  text-align: right;
-}
-
 .list-table {
   width: 100%;
   border-collapse: collapse;

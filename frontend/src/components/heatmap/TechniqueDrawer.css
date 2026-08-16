@@ -110,6 +110,18 @@
   gap: var(--space-2);
 }
 
+.exploiter-link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+}
+
+.exploiter-link:hover {
+  color: var(--color-primary);
+}
+
 .drawer-actions {
   margin-top: auto;
   padding-top: var(--space-5);

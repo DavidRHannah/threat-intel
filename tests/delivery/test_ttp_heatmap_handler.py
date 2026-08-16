@@ -48,6 +48,32 @@ def test_technique_with_recent_high_relevance_exploiters_beats_dormant_one(drive
     assert by_id["T-HOT"]["exploiter_count"] == 1
 
 
+def test_top_exploiters_carry_real_id_and_type_per_entity_label(driver):
+    """A drawer link needs a real elementId + the entity's actual label-derived type --
+    not just a name -- and different exploiter labels (ThreatActor vs Campaign) must
+    resolve to their own distinct type, not one hardcoded value."""
+    with driver.session() as session:
+        session.run(
+            "CREATE (t:TTP {technique_id: 'T-MIXED', name: 'Mixed', "
+            "  tactic: ['initial-access'], test_fixture: true})"
+            "CREATE (actor:ThreatActor {merge_key: 'mixed-actor', name: 'Mixed Actor', "
+            "  relevance_score: 0.9, test_fixture: true})"
+            "CREATE (camp:Campaign {merge_key: 'mixed-campaign', name: 'Mixed Campaign', "
+            "  relevance_score: 0.9, test_fixture: true})"
+            "WITH t, actor, camp "
+            "CREATE (actor)-[:USES {test_fixture: true}]->(t) "
+            "CREATE (camp)-[:USES {test_fixture: true}]->(t)"
+        )
+    with driver.session() as session:
+        techniques = session.execute_read(lambda tx: fetch_ttp_heatmap(tx, halflife_days=30.0))
+    row = next(t for t in techniques if t["id"] == "T-MIXED")
+    by_name = {ex["name"]: ex for ex in row["top_exploiters"]}
+    assert by_name["Mixed Actor"]["type"] == "threat_actor"
+    assert by_name["Mixed Campaign"]["type"] == "campaign"
+    assert by_name["Mixed Actor"]["id"] and by_name["Mixed Campaign"]["id"]
+    assert by_name["Mixed Actor"]["id"] != by_name["Mixed Campaign"]["id"]
+
+
 def test_technique_with_no_exploiters_has_zero_heat(driver):
     with driver.session() as session:
         session.run(

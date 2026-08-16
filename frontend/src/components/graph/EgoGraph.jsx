@@ -1,10 +1,23 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import CytoscapeComponent from 'react-cytoscapejs';
 import { buildElements } from './buildElements';
 import './EgoGraph.css';
 
+const SHOW_TTPS_STORAGE_KEY = 'crossroads-show-ttps';
+
 export function EgoGraph({ data, onNodeClick }) {
-  const elements = useMemo(() => buildElements(data), [data]);
+  // Defaults to hidden: TTPs are frequently the majority of a well-documented actor's
+  // ego-graph neighbors (dozens of USES edges), crowding out the other entity types.
+  const [showTtps, setShowTtps] = useState(() => localStorage.getItem(SHOW_TTPS_STORAGE_KEY) === 'true');
+
+  useEffect(() => {
+    localStorage.setItem(SHOW_TTPS_STORAGE_KEY, String(showTtps));
+  }, [showTtps]);
+
+  const elements = useMemo(
+    () => buildElements(data, { hideTypes: showTtps ? [] : ['ttp'] }),
+    [data, showTtps]
+  );
 
   const stylesheet = [
     {
@@ -48,7 +61,16 @@ export function EgoGraph({ data, onNodeClick }) {
 
   return (
     <div className="ego-graph card">
-      <h3 className="panel-title">Relationship Graph</h3>
+      <div className="ego-graph__header">
+        <h3 className="panel-title">Relationship Graph</h3>
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          onClick={() => setShowTtps((prev) => !prev)}
+        >
+          {showTtps ? 'Hide TTPs' : 'Show TTPs'}
+        </button>
+      </div>
       <div className="graph-container">
         <CytoscapeComponent
           elements={elements}

@@ -1,4 +1,4 @@
-"""Search endpoint: CONTAINS-based match over CVE/ThreatActor/MalwareFamily.
+"""Search endpoint: CONTAINS-based match over CVE/ThreatActor/MalwareFamily/Campaign.
 
 No full-text index exists in the graph yet (spec decision 6, 2026-08-13 design doc) -- fine
 at current volume (~1700 CVEs, low hundreds of actors/malware). Deferred: proper full-text
@@ -36,6 +36,16 @@ CALL {
   WHERE NOT coalesce(n.is_revoked, false)
     AND (toLower(n.name) CONTAINS $q OR toLower(coalesce(n.mitre_id, '')) CONTAINS $q)
   RETURN elementId(n) AS id, 'malware' AS _type, null AS cve_id, null AS description,
+         null AS severity_score, n.name AS name, n.relevance_score AS relevance_score
+  LIMIT $limit
+}
+RETURN id, _type, cve_id, description, severity_score, name, relevance_score
+UNION
+CALL {
+  MATCH (n:Campaign)
+  WHERE NOT coalesce(n.is_revoked, false)
+    AND (toLower(n.name) CONTAINS $q OR toLower(coalesce(n.mitre_id, '')) CONTAINS $q)
+  RETURN elementId(n) AS id, 'campaign' AS _type, null AS cve_id, null AS description,
          null AS severity_score, n.name AS name, n.relevance_score AS relevance_score
   LIMIT $limit
 }

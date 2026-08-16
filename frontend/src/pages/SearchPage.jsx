@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Search } from 'lucide-react';
 import { useSearch } from '../api/hooks';
 import { EntityBadge } from '../components/common/EntityBadge';
@@ -8,8 +8,10 @@ import { formatScore } from '../utils/formatters';
 import './SearchPage.css';
 
 export default function SearchPage() {
-  const [query, setQuery] = useState('');
-  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [searchParams] = useSearchParams();
+  const initialQuery = searchParams.get('q') || '';
+  const [query, setQuery] = useState(initialQuery);
+  const [debouncedQuery, setDebouncedQuery] = useState(initialQuery);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -17,6 +19,17 @@ export default function SearchPage() {
     }, 300);
     return () => clearTimeout(timer);
   }, [query]);
+
+  // Re-searching from the header while already on this page changes the URL's `q` without
+  // remounting SearchPage (same route), so sync local state to it explicitly.
+  useEffect(() => {
+    const q = searchParams.get('q') || '';
+    if (q && q !== query) {
+      setQuery(q);
+      setDebouncedQuery(q);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   const { data } = useSearch(debouncedQuery);
   const results = data?.results ?? [];

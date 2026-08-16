@@ -31,13 +31,5 @@
 }
 
 .entity-middle-row {
-  display: grid;
-  grid-template-columns: 1fr 1.5fr;
-  gap: var(--space-5);
-}
-
-@media (max-width: 1024px) {
-  .entity-middle-row {
-    grid-template-columns: 1fr;
-  }
+  width: 100%;
 }

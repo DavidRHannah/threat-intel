@@ -59,9 +59,6 @@ export function EntityHeader({ entity }) {
         {isNumber(entity.epss_score) && (
           <ScoreBar label="EPSS Score" score={entity.epss_score} value={(entity.epss_score * 100).toFixed(1) + '%'} />
         )}
-        {isNumber(entity.relevance_score) && (
-          <ScoreBar label="Relevance" score={entity.relevance_score} value={(entity.relevance_score * 100).toFixed(1) + '%'} />
-        )}
       </div>
     </div>
   );

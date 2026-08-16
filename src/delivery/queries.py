@@ -143,6 +143,21 @@ def fetch_top_malware(tx, *, limit: int) -> list[dict]:
     return [dict(r) for r in tx.run(_TOP_MALWARE_QUERY, limit=limit)]
 
 
+_TOP_CAMPAIGNS_QUERY = """
+MATCH (n:Campaign)
+WHERE NOT coalesce(n.is_revoked, false)
+RETURN elementId(n) AS id, n.name AS name, n.mitre_id AS mitre_id,
+       n.start_date AS start_date, n.end_date AS end_date, n.objective AS objective,
+       n.relevance_score AS relevance_score, n.confidence AS confidence
+ORDER BY n.relevance_score DESC
+LIMIT $limit
+"""
+
+
+def fetch_top_campaigns(tx, *, limit: int) -> list[dict]:
+    return [dict(r) for r in tx.run(_TOP_CAMPAIGNS_QUERY, limit=limit)]
+
+
 _RECENT_STORIES_QUERY = """
 MATCH (a:Article)
 WHERE a.is_cluster_representative = true AND a.story_cluster_id IS NOT NULL
