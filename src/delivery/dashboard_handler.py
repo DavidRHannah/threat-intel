@@ -4,10 +4,10 @@ Six thin API-Gateway-proxy handlers, each: parse query/path params, run one read
 query (src/delivery/queries.py), return a JSON envelope. No graph writes on this path.
 """
 
-import json
 from datetime import datetime, timedelta, timezone
 
 from src.common.neo4j_driver import get_driver
+from src.delivery._response import _response
 from src.delivery.knobs import DeliveryKnobs
 from src.delivery.queries import (
     fetch_recent_stories,
@@ -18,14 +18,6 @@ from src.delivery.queries import (
     fetch_top_cves,
     fetch_top_malware,
 )
-
-
-def _response(status: int, body: dict) -> dict:
-    return {
-        "statusCode": status,
-        "headers": {"Content-Type": "application/json"},
-        "body": json.dumps(body, default=str),
-    }
 
 
 def _limit_param(event: dict, default: int) -> int:
