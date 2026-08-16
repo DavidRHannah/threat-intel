@@ -54,13 +54,15 @@ class ParsedCve:
     `properties` holds the scalar CVE fields to SET (never `last_modified_date`, which
     the freshness guard owns and writes only when a re-sync is applied). `cwe_ids` and
     `last_modified` are carried separately because a `NodeUpsert` cannot express edge
-    re-sync or the freshness watermark.
+    re-sync or the freshness watermark. `cpe_matches` is carried separately because it is
+    not a scalar CVE property — Task 2 writes it as separate nodes/edges.
     """
 
     cve_id: str
     last_modified: str | None
     properties: dict[str, Any] = field(default_factory=dict)
     cwe_ids: list[str] = field(default_factory=list)
+    cpe_matches: list[dict] = field(default_factory=list)
 
 
 def _nvd_url() -> str:
@@ -99,15 +101,44 @@ def _cwe_ids(weaknesses: list[dict]) -> list[str]:
     return ids
 
 
-def _affected_products(configurations: list[dict]) -> list[str]:
-    products: list[str] = []
+def _split_cpe(criteria: str) -> tuple[str | None, str | None, str | None]:
+    """CPE 2.3 URI is `cpe:2.3:part:vendor:product:version:...` — positional, `:`-delimited.
+    Returns (vendor, product, version), with a bare "*" or "-" version treated as
+    "no exact pin" (None) rather than a literal value to match against."""
+    parts = criteria.split(":")
+    if len(parts) < 6:
+        return None, None, None
+    vendor, product, version = parts[3], parts[4], parts[5]
+    if version in ("*", "-", ""):
+        version = None
+    return vendor or None, product or None, version
+
+
+def _cpe_matches(configurations: list[dict]) -> list[dict]:
+    matches: list[dict] = []
+    seen_ids: set[str] = set()
     for cfg in configurations:
         for node in cfg.get("nodes", []):
             for match in node.get("cpeMatch", []):
+                match_id = match.get("matchCriteriaId")
                 criteria = match.get("criteria")
-                if criteria and criteria not in products:
-                    products.append(criteria)
-    return products
+                if not match_id or not criteria or match_id in seen_ids:
+                    continue
+                seen_ids.add(match_id)
+                vendor, product, version = _split_cpe(criteria)
+                matches.append({
+                    "match_criteria_id": match_id,
+                    "criteria": criteria,
+                    "vendor": vendor,
+                    "product": product,
+                    "version": version,
+                    "version_start_including": match.get("versionStartIncluding"),
+                    "version_start_excluding": match.get("versionStartExcluding"),
+                    "version_end_including": match.get("versionEndIncluding"),
+                    "version_end_excluding": match.get("versionEndExcluding"),
+                    "vulnerable": bool(match.get("vulnerable", True)),
+                })
+    return matches
 
 
 class NvdNormalizer:
@@ -135,15 +166,14 @@ class NvdNormalizer:
                 props["cvss_vector"] = vector
             if cve.get("published"):
                 props["published_date"] = cve["published"]
-            affected = _affected_products(cve.get("configurations", []) or [])
-            if affected:
-                props["affected_products"] = affected
+            cpe_matches = _cpe_matches(cve.get("configurations", []) or [])
             out.append(
                 ParsedCve(
                     cve_id=cve_id,
                     last_modified=cve.get("lastModified"),
                     properties=props,
                     cwe_ids=_cwe_ids(cve.get("weaknesses", []) or []),
+                    cpe_matches=cpe_matches,
                 )
             )
         return out

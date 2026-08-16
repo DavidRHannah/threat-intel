@@ -20,7 +20,14 @@ from unittest.mock import patch
 
 import pytest
 
-from src.collection.rest.nvd import NvdNormalizer, ParsedCve, _apply_cve_tx, enrich_cve, poll_nvd_delta
+from src.collection.rest.nvd import (
+    NvdNormalizer,
+    ParsedCve,
+    _apply_cve_tx,
+    _cpe_matches,
+    enrich_cve,
+    poll_nvd_delta,
+)
 from src.common import config
 from src.common.neo4j_driver import close_driver, get_driver
 from src.common.schema_bootstrap import bootstrap_schema
@@ -399,9 +406,9 @@ def test_normalizer_parses_fixture_shape():
     assert one.properties["cvss_score"] == 7.5
     assert one.properties["cvss_vector"].startswith("CVSS:3.1")
     assert "SQL injection" in one.properties["description"]
-    assert one.properties["affected_products"] == [
-        "cpe:2.3:a:acme:reporting:1.2.0:*:*:*:*:*:*:*"
-    ]
+    assert one.cpe_matches[0]["vendor"] == "acme"
+    assert one.cpe_matches[0]["product"] == "reporting"
+    assert one.cpe_matches[0]["version"] == "1.2.0"
     # A CVE with empty metrics/weaknesses parses without those keys, no crash.
     assert by_id["CVE-2026-1003"].cwe_ids == []
 
@@ -487,3 +494,65 @@ def test_concurrent_allow_create_cvss_changes_announce_exactly_once(driver):
     assert not errors
     assert len(changes) == 10
     assert sum(changes) == 1, f"expected exactly one announce, got {sum(changes)}"
+
+
+# --- Task 1: CPE match extraction -----------------------------------------------
+
+
+def test_cpe_matches_extracts_vendor_product_from_criteria():
+    configurations = [{
+        "nodes": [{
+            "cpeMatch": [{
+                "matchCriteriaId": "ABC-123",
+                "criteria": "cpe:2.3:a:acme:reporting:1.2.0:*:*:*:*:*:*:*",
+                "vulnerable": True,
+            }]
+        }]
+    }]
+    matches = _cpe_matches(configurations)
+    assert matches == [{
+        "match_criteria_id": "ABC-123",
+        "criteria": "cpe:2.3:a:acme:reporting:1.2.0:*:*:*:*:*:*:*",
+        "vendor": "acme",
+        "product": "reporting",
+        "version": "1.2.0",
+        "version_start_including": None,
+        "version_start_excluding": None,
+        "version_end_including": None,
+        "version_end_excluding": None,
+        "vulnerable": True,
+    }]
+
+
+def test_cpe_matches_extracts_version_ranges_and_drops_wildcard_version():
+    configurations = [{
+        "nodes": [{
+            "cpeMatch": [{
+                "matchCriteriaId": "DEF-456",
+                "criteria": "cpe:2.3:a:cisco:ios_xe:*:*:*:*:*:*:*:*",
+                "versionStartIncluding": "17.3.0",
+                "versionEndExcluding": "17.3.5",
+                "vulnerable": True,
+            }]
+        }]
+    }]
+    matches = _cpe_matches(configurations)
+    assert matches[0]["version"] is None  # "*" is a wildcard, not an exact pin
+    assert matches[0]["version_start_including"] == "17.3.0"
+    assert matches[0]["version_end_excluding"] == "17.3.5"
+
+
+def test_cpe_matches_dedupes_on_match_criteria_id():
+    configurations = [
+        {"nodes": [{"cpeMatch": [{
+            "matchCriteriaId": "SAME-ID",
+            "criteria": "cpe:2.3:a:acme:x:1.0:*:*:*:*:*:*:*",
+            "vulnerable": True,
+        }]}]},
+        {"nodes": [{"cpeMatch": [{
+            "matchCriteriaId": "SAME-ID",
+            "criteria": "cpe:2.3:a:acme:x:1.0:*:*:*:*:*:*:*",
+            "vulnerable": True,
+        }]}]},
+    ]
+    assert len(_cpe_matches(configurations)) == 1

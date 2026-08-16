@@ -50,6 +50,13 @@
                     "vulnerable": true,
                     "criteria": "cpe:2.3:a:orbit:orbitqueue:5.0.0:*:*:*:*:*:*:*",
                     "matchCriteriaId": "1111-2222-3333"
+                  },
+                  {
+                    "vulnerable": true,
+                    "criteria": "cpe:2.3:a:orbit:orbitqueue:*:*:*:*:*:*:*:*",
+                    "versionStartIncluding": "4.0.0",
+                    "versionEndExcluding": "5.0.0",
+                    "matchCriteriaId": "4444-5555-6666"
                   }
                 ]
               }
