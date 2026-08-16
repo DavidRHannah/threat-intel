@@ -20,6 +20,8 @@ UNIQUE_CONSTRAINTS = [
     ("campaign_merge_key_unique", "Campaign", "merge_key"),
     ("article_source_guid_key", "Article", "source_guid_key"),
     ("ioc_value_type_key", "IOC", "value_type_key"),
+    ("cpe_match_id_unique", "CPEMatch", "match_criteria_id"),
+    ("asset_key_unique", "Asset", "asset_key"),
 ]
 
 

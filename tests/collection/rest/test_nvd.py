@@ -205,6 +205,25 @@ def test_enrich_populates_bare_stub(driver):
     assert client.calls[0]["params"].get("cveId") == "CVE-2026-2002"
 
 
+def test_enrich_cve_writes_cpe_match_nodes(driver):
+    # nvd_delta_response.json's CVE-2026-1001 carries one cpeMatch entry.
+    with driver.session() as s:
+        s.run(
+            "MERGE (c:CVE {cve_id:'CVE-2026-1001'}) SET c.test_fixture = true"
+        ).consume()
+
+    client = FakeHttpClient(_load("nvd_delta_response.json"))
+    with patch("src.collection.rest.nvd.publish_node_write"):
+        enrich_cve(driver, client, "CVE-2026-1001")
+
+    with driver.session() as s:
+        s.run("MATCH (m:CPEMatch) SET m.test_fixture = true").consume()
+        row = s.run(
+            "MATCH (:CVE {cve_id:'CVE-2026-1001'})-[:MATCHES]->(m:CPEMatch) RETURN count(m) AS n"
+        ).single()
+        assert row["n"] >= 1
+
+
 # --- Task 1.2: node_write publish on a real cvss_score change ------------------
 
 

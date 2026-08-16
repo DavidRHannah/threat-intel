@@ -34,6 +34,8 @@ def test_bootstrap_creates_all_constraints_and_the_vector_index(driver):
         "campaign_merge_key_unique",
         "article_source_guid_key",
         "ioc_value_type_key",
+        "cpe_match_id_unique",
+        "asset_key_unique",
         "article_embedding_index",
     }
 
@@ -49,4 +51,4 @@ def test_bootstrap_creates_all_constraints_and_the_vector_index(driver):
 def test_bootstrap_is_idempotent(driver):
     bootstrap_schema(driver)
     second_run_applied = bootstrap_schema(driver)  # must not raise
-    assert len(second_run_applied) == 10
+    assert len(second_run_applied) == 12

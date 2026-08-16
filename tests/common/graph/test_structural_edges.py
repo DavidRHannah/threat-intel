@@ -1,6 +1,6 @@
 import pytest
 
-from src.common.graph.structural_edges import resync_categorized_as
+from src.common.graph.structural_edges import resync_categorized_as, resync_matches
 from src.common.neo4j_driver import close_driver, get_driver
 from src.common.schema_bootstrap import bootstrap_schema
 
@@ -58,3 +58,53 @@ def test_new_mapping_reports_created_and_resync_reports_deleted(driver):
     assert first["deleted"] == []
     assert second["created"] == []
     assert second["deleted"] == ["CWE-89"]  # FR-RG-09
+
+
+def test_resync_matches_creates_node_and_edge(driver):
+    with driver.session() as s:
+        s.run("MERGE (c:CVE {cve_id:'CVE-2026-9001'}) SET c.test_fixture = true").consume()
+        result = s.execute_write(
+            lambda tx: resync_matches(
+                tx,
+                cve_key={"cve_id": "CVE-2026-9001"},
+                matches=[{
+                    "match_criteria_id": "MC-1", "criteria": "cpe:2.3:a:acme:x:1.0:*:*:*:*:*:*:*",
+                    "vendor": "acme", "product": "x", "version": "1.0",
+                    "version_start_including": None, "version_start_excluding": None,
+                    "version_end_including": None, "version_end_excluding": None,
+                    "vulnerable": True,
+                }],
+            )
+        )
+        s.run("MATCH (m:CPEMatch {match_criteria_id:'MC-1'}) SET m.test_fixture = true").consume()
+        assert result["created"] == ["MC-1"]
+        row = s.run(
+            "MATCH (:CVE {cve_id:'CVE-2026-9001'})-[:MATCHES]->(m:CPEMatch {match_criteria_id:'MC-1'}) "
+            "RETURN m.vendor AS vendor, m.version AS version"
+        ).single()
+        assert row["vendor"] == "acme"
+        assert row["version"] == "1.0"
+
+
+def test_resync_matches_removes_stale_edge_but_not_the_shared_node(driver):
+    """A CPEMatch can be referenced by more than one CVE (matchCriteriaId is reusable);
+    dropping the edge from one CVE must not delete the node."""
+    with driver.session() as s:
+        s.run("MERGE (c:CVE {cve_id:'CVE-2026-9002'}) SET c.test_fixture = true").consume()
+        s.run("MERGE (c:CVE {cve_id:'CVE-2026-9003'}) SET c.test_fixture = true").consume()
+        match = {
+            "match_criteria_id": "MC-2", "criteria": "cpe:2.3:a:acme:y:2.0:*:*:*:*:*:*:*",
+            "vendor": "acme", "product": "y", "version": "2.0",
+            "version_start_including": None, "version_start_excluding": None,
+            "version_end_including": None, "version_end_excluding": None, "vulnerable": True,
+        }
+        s.execute_write(lambda tx: resync_matches(tx, cve_key={"cve_id": "CVE-2026-9002"}, matches=[match]))
+        s.execute_write(lambda tx: resync_matches(tx, cve_key={"cve_id": "CVE-2026-9003"}, matches=[match]))
+        s.run("MATCH (m:CPEMatch {match_criteria_id:'MC-2'}) SET m.test_fixture = true").consume()
+        # CVE-2026-9002 no longer references it.
+        result = s.execute_write(lambda tx: resync_matches(tx, cve_key={"cve_id": "CVE-2026-9002"}, matches=[]))
+        assert result["deleted"] == ["MC-2"]
+        assert s.run("MATCH (m:CPEMatch {match_criteria_id:'MC-2'}) RETURN m").single() is not None
+        assert s.run(
+            "MATCH (:CVE {cve_id:'CVE-2026-9003'})-[:MATCHES]->(m:CPEMatch {match_criteria_id:'MC-2'}) RETURN m"
+        ).single() is not None

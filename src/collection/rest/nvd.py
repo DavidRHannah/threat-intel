@@ -40,7 +40,7 @@ from src.collection.rest.http_errors import handle_response
 from src.collection.rest.normalizer import NodeUpsert
 from src.common.config import get_config
 from src.common.graph.publish import publish_node_write
-from src.common.graph.structural_edges import resync_categorized_as
+from src.common.graph.structural_edges import resync_categorized_as, resync_matches
 
 
 class _HttpClient(Protocol):
@@ -289,6 +289,7 @@ def _apply_cve_tx(tx, parsed: ParsedCve, *, allow_create: bool) -> tuple[str, bo
             cve_key={"cve_id": parsed.cve_id},
             cwe_keys=[{"cwe_id": w} for w in parsed.cwe_ids],
         )
+        resync_matches(tx, cve_key={"cve_id": parsed.cve_id}, matches=parsed.cpe_matches)
         if parsed.last_modified is not None:
             tx.run(
                 "MATCH (c:CVE {cve_id:$id}) SET c.last_modified_date=$lmd",

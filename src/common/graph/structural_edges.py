@@ -30,3 +30,38 @@ def resync_categorized_as(tx, *, cve_key: dict, cwe_keys: list[dict]) -> dict:
             to_delete=list(to_delete), **params,
         )
     return {"created": created, "deleted": list(to_delete)}
+
+
+def resync_matches(tx, *, cve_key: dict, matches: list[dict]) -> dict:
+    created = []
+    for match in matches:
+        match_key = {"match_criteria_id": match["match_criteria_id"]}
+        tx.run(
+            "MERGE (m:CPEMatch {match_criteria_id: $id}) SET m += $props",
+            id=match["match_criteria_id"],
+            props={k: v for k, v in match.items() if k != "match_criteria_id"},
+        ).consume()
+        outcome = merge_relationship(
+            tx, start_label="CVE", start_key=cve_key,
+            end_label="CPEMatch", end_key=match_key, rel_type="MATCHES",
+            on_create={}, on_match={},
+        )
+        if outcome == "created":
+            created.append(match["match_criteria_id"])
+
+    wanted = {m["match_criteria_id"] for m in matches}
+    match_cve = ", ".join(f"{k}: $cve_{k}" for k in cve_key)
+    params = {f"cve_{k}": v for k, v in cve_key.items()}
+    rows = tx.run(
+        f"MATCH (:CVE {{{match_cve}}})-[r:MATCHES]->(m:CPEMatch) RETURN m.match_criteria_id AS id",
+        **params,
+    )
+    existing = {row["id"] for row in rows}
+    to_delete = existing - wanted
+    if to_delete:
+        tx.run(
+            f"MATCH (:CVE {{{match_cve}}})-[r:MATCHES]->(m:CPEMatch) "
+            "WHERE m.match_criteria_id IN $to_delete DELETE r",
+            to_delete=list(to_delete), **params,
+        )
+    return {"created": created, "deleted": list(to_delete)}
