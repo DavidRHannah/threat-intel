@@ -131,13 +131,35 @@ class DeliveryStack(Stack):
             "TtpHeatmapFunction", "src.delivery.ttp_heatmap_handler.handler"
         )
         self.search_fn = _fn("SearchFunction", "src.delivery.search_handler.handler")
+        self.create_asset_fn = _fn(
+            "CreateAssetFunction", "src.delivery.assets_handler.create_asset_handler"
+        )
+        self.list_assets_fn = _fn(
+            "ListAssetsFunction", "src.delivery.assets_handler.list_assets_handler"
+        )
+        self.delete_asset_fn = _fn(
+            "DeleteAssetFunction", "src.delivery.assets_handler.delete_asset_handler"
+        )
+        self.asset_cves_fn = _fn(
+            "AssetCvesFunction", "src.delivery.assets_handler.asset_cves_handler"
+        )
+        self.all_assets_cves_fn = _fn(
+            "AllAssetsCvesFunction", "src.delivery.assets_handler.all_assets_cves_handler"
+        )
+        self.known_vendor_products_fn = _fn(
+            "KnownVendorProductsFunction",
+            "src.delivery.assets_handler.known_vendor_products_handler",
+        )
 
         # --- API Gateway (HTTP API), CORS for the browser-facing frontend ---------------
         self.api = apigwv2.HttpApi(
             self, "DeliveryApi",
             cors_preflight=apigwv2.CorsPreflightOptions(
                 allow_origins=[_FRONTEND_ORIGIN],
-                allow_methods=[apigwv2.CorsHttpMethod.GET],
+                allow_methods=[
+                    apigwv2.CorsHttpMethod.GET, apigwv2.CorsHttpMethod.POST,
+                    apigwv2.CorsHttpMethod.DELETE,
+                ],
                 allow_headers=["Authorization", "Content-Type"],
             ),
         )
@@ -147,20 +169,35 @@ class DeliveryStack(Stack):
         CfnOutput(self, "DeliveryApiUrl", value=self.api.url)
 
         routes = [
-            ("/dashboard/stats", self.stats_fn, "StatsIntegration"),
-            ("/dashboard/top-cves", self.top_cves_fn, "TopCvesIntegration"),
-            ("/dashboard/top-actors", self.top_actors_fn, "TopActorsIntegration"),
-            ("/dashboard/top-malware", self.top_malware_fn, "TopMalwareIntegration"),
-            ("/dashboard/top-campaigns", self.top_campaigns_fn, "TopCampaignsIntegration"),
-            ("/dashboard/recent-stories", self.recent_stories_fn, "RecentStoriesIntegration"),
-            ("/dashboard/subgraph/{id}", self.subgraph_fn, "SubgraphIntegration"),
-            ("/dashboard/ttp-heatmap", self.ttp_heatmap_fn, "TtpHeatmapIntegration"),
-            ("/search", self.search_fn, "SearchIntegration"),
+            ("/dashboard/stats", "GET", self.stats_fn, "StatsIntegration"),
+            ("/dashboard/top-cves", "GET", self.top_cves_fn, "TopCvesIntegration"),
+            ("/dashboard/top-actors", "GET", self.top_actors_fn, "TopActorsIntegration"),
+            ("/dashboard/top-malware", "GET", self.top_malware_fn, "TopMalwareIntegration"),
+            (
+                "/dashboard/top-campaigns", "GET", self.top_campaigns_fn,
+                "TopCampaignsIntegration",
+            ),
+            (
+                "/dashboard/recent-stories", "GET", self.recent_stories_fn,
+                "RecentStoriesIntegration",
+            ),
+            ("/dashboard/subgraph/{id}", "GET", self.subgraph_fn, "SubgraphIntegration"),
+            ("/dashboard/ttp-heatmap", "GET", self.ttp_heatmap_fn, "TtpHeatmapIntegration"),
+            ("/search", "GET", self.search_fn, "SearchIntegration"),
+            ("/assets", "POST", self.create_asset_fn, "CreateAssetIntegration"),
+            ("/assets", "GET", self.list_assets_fn, "ListAssetsIntegration"),
+            ("/assets/{id}", "DELETE", self.delete_asset_fn, "DeleteAssetIntegration"),
+            ("/assets/{id}/cves", "GET", self.asset_cves_fn, "AssetCvesIntegration"),
+            ("/assets/cves", "GET", self.all_assets_cves_fn, "AllAssetsCvesIntegration"),
+            (
+                "/assets/known-vendor-products", "GET", self.known_vendor_products_fn,
+                "KnownVendorProductsIntegration",
+            ),
         ]
-        for path, fn, integration_id in routes:
+        for path, method, fn, integration_id in routes:
             self.api.add_routes(
                 path=path,
-                methods=[apigwv2.HttpMethod.GET],
+                methods=[apigwv2.HttpMethod[method]],
                 integration=integrations.HttpLambdaIntegration(integration_id, fn),
                 authorizer=authorizer,
             )

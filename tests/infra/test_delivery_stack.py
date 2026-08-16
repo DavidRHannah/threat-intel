@@ -36,9 +36,9 @@ def _actions_granted_to(stack: DeliveryStack, template: Template, role) -> set[s
     return actions
 
 
-def test_synthesizes_nine_lambdas():
+def test_synthesizes_fifteen_lambdas():
     _, template = _synth_stack()
-    template.resource_count_is("AWS::Lambda::Function", 9)
+    template.resource_count_is("AWS::Lambda::Function", 15)
 
 
 def test_api_gateway_has_jwt_authorizer():
@@ -71,3 +71,63 @@ def test_each_dashboard_lambda_has_its_own_ssm_grant():
     ]:
         actions = _actions_granted_to(stack, template, fn.role)
         assert "ssm:GetParameter" in actions
+
+
+def test_each_asset_lambda_has_its_own_ssm_grant():
+    stack, template = _synth_stack()
+    for fn in [
+        stack.create_asset_fn, stack.list_assets_fn, stack.delete_asset_fn,
+        stack.asset_cves_fn, stack.all_assets_cves_fn, stack.known_vendor_products_fn,
+    ]:
+        actions = _actions_granted_to(stack, template, fn.role)
+        assert "ssm:GetParameter" in actions
+
+
+def test_api_cors_allows_post_and_delete():
+    _, template = _synth_stack()
+    template.has_resource_properties(
+        "AWS::ApiGatewayV2::Api",
+        {"CorsConfiguration": {"AllowMethods": ["GET", "POST", "DELETE"]}},
+    )
+
+
+def test_create_asset_route_exists():
+    _, template = _synth_stack()
+    template.has_resource_properties(
+        "AWS::ApiGatewayV2::Route", {"RouteKey": "POST /assets"}
+    )
+
+
+def test_list_assets_route_exists():
+    _, template = _synth_stack()
+    template.has_resource_properties(
+        "AWS::ApiGatewayV2::Route", {"RouteKey": "GET /assets"}
+    )
+
+
+def test_delete_asset_route_exists():
+    _, template = _synth_stack()
+    template.has_resource_properties(
+        "AWS::ApiGatewayV2::Route", {"RouteKey": "DELETE /assets/{id}"}
+    )
+
+
+def test_asset_cves_route_exists():
+    _, template = _synth_stack()
+    template.has_resource_properties(
+        "AWS::ApiGatewayV2::Route", {"RouteKey": "GET /assets/{id}/cves"}
+    )
+
+
+def test_all_assets_cves_route_exists():
+    _, template = _synth_stack()
+    template.has_resource_properties(
+        "AWS::ApiGatewayV2::Route", {"RouteKey": "GET /assets/cves"}
+    )
+
+
+def test_known_vendor_products_route_exists():
+    _, template = _synth_stack()
+    template.has_resource_properties(
+        "AWS::ApiGatewayV2::Route", {"RouteKey": "GET /assets/known-vendor-products"}
+    )
