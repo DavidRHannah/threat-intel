@@ -375,11 +375,25 @@ def handler(event: dict, context: Any, *, driver=None, http_client: _HttpClient 
             http_client.close()
 
 
-def enrich_cve(driver, http_client: _HttpClient, cve_id: str) -> None:
+def enrich_cve(
+    driver, http_client: _HttpClient, cve_id: str, *, publish: bool = True
+) -> bool:
     """On-demand: fetch one CVE from NVD by id and populate its fields (FR-DC-22).
 
     MERGEs the CVE, so it is safe whether or not the lazy-creation caller has already
     created the stub. Subject to the same CATEGORIZED_AS freshness guard as the delta.
+
+    Returns True if NVD returned a record for `cve_id` and it was applied, False if the
+    response carried no such CVE. NVD answers an unknown id with 200 and an empty
+    `vulnerabilities` list rather than a 404, so without this return value a miss is
+    indistinguishable from a success to the caller — which the backfill
+    (`nvd_backfill.py`) needs in order to stop retrying a CVE NVD has no record of.
+    Every other caller ignores it and is unaffected.
+
+    `publish=False` suppresses the `node_write` announcement. Intended for a bulk
+    backfill, where thousands of CVSS-change publishes would fan out to L4's per-message
+    Lambda faster than useful — the daily sweep rescores those CVEs anyway. Normal
+    on-demand callers leave it at True: the announcement is the designed rescore path.
     """
     params = {"cveId": cve_id}
     response = http_client.get(_nvd_url(), params=params)
@@ -387,6 +401,7 @@ def enrich_cve(driver, http_client: _HttpClient, cve_id: str) -> None:
 
     parsed = NvdNormalizer().parse(body)
     cvss_changed = False
+    applied = False
     with driver.session() as session:
         for record in parsed:
             if record.cve_id != cve_id:
@@ -394,8 +409,10 @@ def enrich_cve(driver, http_client: _HttpClient, cve_id: str) -> None:
             _outcome, cvss_changed = session.execute_write(
                 _apply_cve_tx, record, allow_create=True
             )
+            applied = True
 
     # Publish only AFTER the transaction commits, so a subscriber reading the node back
     # sees the committed cvss_score.
-    if cvss_changed:
+    if cvss_changed and publish:
         publish_node_write(label="CVE", key={"cve_id": cve_id}, changed_fields=["cvss_score"])
+    return applied
