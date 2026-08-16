@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import aws_cdk as cdk
 
+from infra.stacks.assets_stack import AssetsStack
 from infra.stacks.data_collection_stack import DataCollectionStack
 from infra.stacks.delivery_stack import DeliveryStack
 from infra.stacks.foundation_stack import FoundationStack
@@ -11,7 +12,7 @@ from infra.stacks.scoring_stack import ScoringStack
 app = cdk.App()
 env_name = app.node.try_get_context("env") or "dev"
 foundation = FoundationStack(app, f"CrossroadsFoundation-{env_name}", env_name=env_name)
-DataCollectionStack(
+data_collection = DataCollectionStack(
     app,
     f"CrossroadsDataCollection-{env_name}",
     env_name=env_name,
@@ -41,5 +42,12 @@ DeliveryStack(
     env_name=env_name,
     foundation=foundation,
     interop=interop,
+)
+AssetsStack(
+    app,
+    f"CrossroadsAssets-{env_name}",
+    env_name=env_name,
+    foundation=foundation,
+    data_collection=data_collection,
 )
 app.synth()
