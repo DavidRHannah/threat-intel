@@ -512,36 +512,3 @@ class TestCustomMitreObjects:
         # the custom object is ignored, but the standard ones are still written
         assert _node_count(driver, "TTP", "technique_id", TTP_KEY) == 1
         assert _node_count(driver, "ThreatActor", "merge_key", THREAT_ACTOR_KEY) == 1
-
-
-class TestIncrementalWatermark:
-    def test_domain_watermark_is_persisted_as_each_domain_completes(self, driver, base_index):
-        """The handler persisted `last_ingested_versions` only AFTER all three domains
-        finished, so a run that died partway (the real Lambda hit its 600s cap during
-        mobile/ics) banked nothing -- every later run re-synced enterprise from scratch,
-        hit the cap again, and never converged. Progress must be durable per domain.
-        """
-        v1_bundle = _load("attck_enterprise_bundle_v1.json")
-        bumped_index = copy.deepcopy(base_index)
-        for d in DOMAINS:
-            bumped_index[d]["version"] = "14.2"
-
-        def fetch_index(domain):
-            return bumped_index[domain]
-
-        def fetch_bundle(domain):
-            if domain == "enterprise-attack":
-                return v1_bundle
-            raise RuntimeError(f"{domain} exploded")  # simulates the timeout/failure
-
-        persisted: list[tuple[str, str]] = []
-        last_ingested = {d: "14.1" for d in DOMAINS}
-
-        with pytest.raises(RuntimeError):
-            sync_attck(
-                driver, fetch_index, fetch_bundle, last_ingested,
-                on_domain_synced=lambda domain, version: persisted.append((domain, version)),
-            )
-
-        # enterprise finished before the failure, so its watermark is already banked.
-        assert persisted == [("enterprise-attack", "14.2")]

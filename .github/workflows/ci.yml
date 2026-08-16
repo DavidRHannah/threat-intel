@@ -14,6 +14,7 @@ jobs:
         image: neo4j:5.24
         env:
           NEO4J_AUTH: neo4j/crossroads-dev
+          NEO4J_PLUGINS: '["apoc"]'
         ports:
           - 7687:7687
         options: >-
@@ -30,3 +31,4 @@ jobs:
       - run: ruff check src infra tests
       - run: pytest -v
       - run: python -m infra.app
+        timeout-minutes: 5
