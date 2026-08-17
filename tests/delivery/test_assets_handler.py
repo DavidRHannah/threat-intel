@@ -117,3 +117,27 @@ def test_known_vendor_products_handler(driver, monkeypatch):
     assert any(p["vendor"] == "acme" and p["product"] == "widget" for p in pairs)
     with driver.session() as s:
         s.run("MATCH (m:CPEMatch {match_criteria_id:'mc-x'}) DETACH DELETE m").consume()
+
+
+def test_known_vendor_products_handler_passes_the_q_prefix_through(driver, monkeypatch):
+    """Finding #6's wiring half: the handler must forward `?q=` to the query, or the
+    server-side narrowing exists but nothing can reach it."""
+    monkeypatch.setattr("src.delivery.assets_handler.get_driver", lambda: driver)
+    try:
+        with driver.session() as s:
+            s.run(
+                "MERGE (:CPEMatch {match_criteria_id:'mc-q1', vendor:'alpha', product:'one'}) "
+                "MERGE (:CPEMatch {match_criteria_id:'mc-q2', vendor:'omega', product:'two'})"
+            ).consume()
+        resp = known_vendor_products_handler({"queryStringParameters": {"q": "ome"}}, None)
+        assert resp["statusCode"] == 200
+        pairs = json.loads(resp["body"])["vendor_products"]
+        vendors = {p["vendor"] for p in pairs}
+        assert "omega" in vendors
+        assert "alpha" not in vendors  # the prefix actually narrowed server-side
+    finally:
+        with driver.session() as s:
+            s.run(
+                "MATCH (m:CPEMatch) WHERE m.match_criteria_id IN ['mc-q1','mc-q2'] "
+                "DETACH DELETE m"
+            ).consume()

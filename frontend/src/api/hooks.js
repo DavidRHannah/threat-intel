@@ -144,10 +144,15 @@ export function useAllAssetsCves() {
   });
 }
 
-export function useKnownVendorProducts() {
+// `q` is a server-side prefix filter. Without it the endpoint's LIMIT truncates the
+// whole CPEMatch label alphabetically at production scale (see fetch_known_vendor_products),
+// so late-alphabet vendors like `microsoft` never reach the autocomplete at all.
+export function useKnownVendorProducts(q = '') {
   return useQuery({
-    queryKey: ['assets', 'known-vendor-products'],
-    queryFn: () => client.get('/assets/known-vendor-products').then(r => r.data),
+    queryKey: ['assets', 'known-vendor-products', q],
+    queryFn: () => client
+      .get('/assets/known-vendor-products', { params: q ? { q } : {} })
+      .then(r => r.data),
     staleTime: 30 * 60 * 1000, // real NVD vendor/product data changes slowly
   });
 }

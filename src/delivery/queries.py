@@ -288,14 +288,28 @@ def fetch_cves_for_all_assets(tx) -> list[dict]:
 _KNOWN_VENDOR_PRODUCTS_QUERY = """
 MATCH (m:CPEMatch)
 WHERE m.vendor IS NOT NULL AND m.product IS NOT NULL
+  AND ($q = '' OR m.vendor STARTS WITH $q OR m.product STARTS WITH $q)
 RETURN DISTINCT m.vendor AS vendor, m.product AS product
 ORDER BY vendor, product
 LIMIT $limit
 """
 
 
-def fetch_known_vendor_products(tx, *, limit: int = 2000) -> list[dict]:
+def fetch_known_vendor_products(tx, *, q: str = "", limit: int = 2000) -> list[dict]:
     """Distinct (vendor, product) pairs seen in real NVD data, for the Assets page's
     autocomplete (design spec Decision 9) -- avoids a free-text vendor/product that can
-    never match anything in CPEMatch."""
-    return [dict(r) for r in tx.run(_KNOWN_VENDOR_PRODUCTS_QUERY, limit=limit)]
+    never match anything in CPEMatch.
+
+    `q` is a prefix filter applied SERVER-SIDE, and it is what makes `limit` a genuine
+    page size rather than a truncation. `DISTINCT`+`ORDER BY` are evaluated over the
+    whole matched set before `LIMIT`, so an unscoped query at production scale returned
+    only the alphabetically-first `limit` pairs -- dropping e.g. `microsoft` (the single
+    largest vendor in the live graph, ~494 CVEs) off the end of the alphabet and
+    reproducing the exact "typo that matches nothing, with no error" failure this
+    endpoint exists to prevent.
+
+    `q` is lower-cased here because vendor/product are case-folded at write time
+    (`_split_cpe`); `STARTS WITH` against the stored value can then use
+    `cpe_match_vendor_index` / `cpe_match_product_index` instead of scanning the label.
+    """
+    return [dict(r) for r in tx.run(_KNOWN_VENDOR_PRODUCTS_QUERY, q=(q or "").lower(), limit=limit)]

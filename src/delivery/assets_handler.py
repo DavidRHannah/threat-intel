@@ -63,7 +63,11 @@ def all_assets_cves_handler(event, context) -> dict:
 
 
 def known_vendor_products_handler(event, context) -> dict:
+    # `q` narrows the autocomplete server-side. Without it the LIMIT truncates the whole
+    # label alphabetically at production scale rather than paging a filtered set -- see
+    # `fetch_known_vendor_products`.
+    q = (event.get("queryStringParameters") or {}).get("q") or ""
     driver = get_driver()
     with driver.session() as session:
-        pairs = session.execute_read(fetch_known_vendor_products)
+        pairs = session.execute_read(lambda tx: fetch_known_vendor_products(tx, q=q))
     return _response(200, {"vendor_products": pairs})

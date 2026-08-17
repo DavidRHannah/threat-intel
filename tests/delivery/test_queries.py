@@ -348,3 +348,59 @@ def test_fetch_known_vendor_products_returns_distinct_pairs(driver):
             "MATCH (m:CPEMatch) WHERE m.match_criteria_id IN "
             "['mc-1','mc-2','mc-3'] DETACH DELETE m"
         ).consume()
+
+
+def test_known_vendor_products_prefix_finds_what_an_unscoped_limit_truncates_away(driver):
+    """Final-review finding #6. `DISTINCT`+`ORDER BY` are evaluated over the WHOLE label
+    before `LIMIT`, so an unscoped autocomplete returns only the alphabetically-first
+    `limit` pairs. At production scale that silently drops late-alphabet vendors --
+    including `microsoft`, the largest vendor in the live graph -- which is exactly the
+    "typo matches nothing, no error" failure the endpoint exists to prevent.
+
+    Seeds more distinct pairs than the limit, all sorting BEFORE the target, and proves
+    (a) the unscoped query misses the target and (b) `q` finds it.
+    """
+    limit = 20
+    try:
+        with driver.session() as s:
+            # 30 pairs sorting before "zvendor" -- more than `limit`.
+            s.run(
+                "UNWIND range(0, 29) AS i "
+                "MERGE (m:CPEMatch {match_criteria_id: 'mc-trunc-' + toString(i)}) "
+                "SET m.vendor = 'avendor' + toString(i), m.product = 'p'"
+            ).consume()
+            s.run(
+                "MERGE (m:CPEMatch {match_criteria_id:'mc-trunc-target'}) "
+                "SET m.vendor = 'zvendor', m.product = 'zproduct'"
+            ).consume()
+
+            unscoped = s.execute_read(
+                lambda tx: fetch_known_vendor_products(tx, limit=limit)
+            )
+            assert not any(r["vendor"] == "zvendor" for r in unscoped), (
+                "fixture is not exercising the truncation this test is about"
+            )
+
+            scoped = s.execute_read(
+                lambda tx: fetch_known_vendor_products(tx, q="zvend", limit=limit)
+            )
+            assert any(r["vendor"] == "zvendor" for r in scoped)
+
+            # Prefix matches on the PRODUCT half too (the user may type either field).
+            by_product = s.execute_read(
+                lambda tx: fetch_known_vendor_products(tx, q="zprod", limit=limit)
+            )
+            assert any(r["product"] == "zproduct" for r in by_product)
+
+            # Case-insensitive from the caller's side: stored values are folded at write
+            # time, so the query has to fold the argument.
+            upper = s.execute_read(
+                lambda tx: fetch_known_vendor_products(tx, q="ZVEND", limit=limit)
+            )
+            assert any(r["vendor"] == "zvendor" for r in upper)
+    finally:
+        with driver.session() as s:
+            s.run(
+                "MATCH (m:CPEMatch) WHERE m.match_criteria_id STARTS WITH 'mc-trunc-' "
+                "DETACH DELETE m"
+            ).consume()
