@@ -15,29 +15,42 @@ from src.common.neo4j_driver import get_driver
 logger = logging.getLogger(__name__)
 
 
-def _match_and_assets(tx, match_criteria_id: str) -> tuple[dict | None, list[dict]]:
-    row = tx.run(
-        "MATCH (c:CVE)-[:MATCHES]->(m:CPEMatch {match_criteria_id: $id}) "
-        "RETURN c.cve_id AS cve_id, m.vendor AS vendor, m.product AS product, "
-        "  m.version AS version, m.version_start_including AS version_start_including, "
-        "  m.version_start_excluding AS version_start_excluding, "
-        "  m.version_end_including AS version_end_including, "
-        "  m.version_end_excluding AS version_end_excluding, m.vulnerable AS vulnerable "
-        "LIMIT 1",
-        id=match_criteria_id,
-    ).single()
-    if row is None:
-        return None, []
-    match = dict(row)
+def _match_and_assets(tx, match_criteria_id: str) -> tuple[list[dict], list[dict]]:
+    """All (CVE, CPEMatch) rows for this match id, plus every Asset sharing its
+    vendor/product.
+
+    Returns EVERY referencing CVE, not one. `matchCriteriaId` is deliberately shared
+    across CVEs (see `test_resync_matches_removes_stale_edge_but_not_the_shared_node`),
+    and a `LIMIT 1` here silently dropped the AFFECTS edge for every CVE but one while
+    the handler still reported success.
+
+    The Asset lookup compares vendor/product with plain equality against already
+    case-folded values (`create_asset` folds at write time), so it can use
+    `asset_vendor_product_index`; `toLower()` on the property would not.
+    """
+    rows = [
+        dict(r)
+        for r in tx.run(
+            "MATCH (m:CPEMatch {match_criteria_id: $id})<-[:MATCHES]-(c:CVE) "
+            "RETURN c.cve_id AS cve_id, m.vendor AS vendor, m.product AS product, "
+            "  m.version AS version, m.version_start_including AS version_start_including, "
+            "  m.version_start_excluding AS version_start_excluding, "
+            "  m.version_end_including AS version_end_including, "
+            "  m.version_end_excluding AS version_end_excluding, m.vulnerable AS vulnerable",
+            id=match_criteria_id,
+        )
+    ]
+    if not rows:
+        return [], []
     assets = list(
         tx.run(
-            "MATCH (a:Asset) WHERE toLower(a.vendor) = toLower($vendor) "
-            "  AND toLower(a.product) = toLower($product) "
+            "MATCH (a:Asset {vendor: $vendor, product: $product}) "
             "RETURN a.asset_key AS asset_key, a.version AS version",
-            vendor=match["vendor"], product=match["product"],
+            vendor=(rows[0]["vendor"] or "").lower(),
+            product=(rows[0]["product"] or "").lower(),
         )
     )
-    return match, [dict(r) for r in assets]
+    return rows, [dict(r) for r in assets]
 
 
 def _handle_cpe_match_write(message: dict, driver) -> bool:
@@ -52,17 +65,22 @@ def _handle_cpe_match_write(message: dict, driver) -> bool:
     with driver.session() as session:
         def _tx(tx):
             nonlocal did
-            match, assets = _match_and_assets(tx, match_criteria_id)
-            if match is None:
+            matches, assets = _match_and_assets(tx, match_criteria_id)
+            if not matches:
                 return
-            for asset in assets:
-                if not version_satisfies(asset["version"], match):
-                    continue
-                write_affects_edge(
-                    tx, cve_id=match["cve_id"], asset_key=asset["asset_key"],
-                    match_criteria_id=match_criteria_id, now=now,
-                )
-                did = True
+            # Every CVE referencing this CPEMatch gets its own AFFECTS edge -- the
+            # version bounds are a property of the shared match, so a satisfied asset
+            # is affected by all of them, not just the first one the query happened to
+            # return.
+            for match in matches:
+                for asset in assets:
+                    if not version_satisfies(asset["version"], match):
+                        continue
+                    write_affects_edge(
+                        tx, cve_id=match["cve_id"], asset_key=asset["asset_key"],
+                        match_criteria_id=match_criteria_id, now=now,
+                    )
+                    did = True
 
         session.execute_write(_tx)
     return did
