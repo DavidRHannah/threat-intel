@@ -12,6 +12,11 @@ def create_asset(
     tx, *, vendor: str, product: str, version: str, name: str | None = None
 ) -> dict[str, Any]:
     key = _asset_key(vendor, product, version)
+    # Case-folded at WRITE time, matching `_split_cpe`'s handling of CPEMatch and
+    # `asset_key`'s own folding. The matcher compares vendor/product with plain equality
+    # so the Asset(vendor, product) / CPEMatch(vendor, product) indexes can serve it --
+    # a `toLower()` in the query would plan as a full label scan instead.
+    vendor, product = vendor.lower(), product.lower()
     row = tx.run(
         "MERGE (a:Asset {asset_key: $key}) "
         "ON CREATE SET a.vendor=$vendor, a.product=$product, a.version=$version, "

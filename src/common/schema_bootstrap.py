@@ -25,6 +25,27 @@ UNIQUE_CONSTRAINTS = [
 ]
 
 
+# Range indexes backing the asset matcher's lookups. Without these, every event-driven
+# match and every sweep page planned an AllNodesScan/full label scan over CPEMatch (which
+# is the largest label in the live graph — tens of matches per CVE across ~1.7k CVEs).
+#
+# - The COMPOSITE (vendor, product) indexes serve the matcher's equality lookup on both
+#   properties at once (`candidate_matches_for`, `_match_and_assets`).
+# - The SINGLE-property CPEMatch indexes serve the autocomplete's `STARTS WITH` prefix
+#   scan (`fetch_known_vendor_products`): a composite index only answers equality on its
+#   leading properties, so a prefix predicate needs its own single-property index.
+#
+# All of these rely on vendor/product being case-folded AT WRITE TIME (`_split_cpe`,
+# `create_asset`) — a `toLower(n.vendor)` in a query is a function call on the indexed
+# property and cannot use any of them.
+RANGE_INDEXES = [
+    ("cpe_match_vendor_product_index", "CPEMatch", ("vendor", "product")),
+    ("cpe_match_vendor_index", "CPEMatch", ("vendor",)),
+    ("cpe_match_product_index", "CPEMatch", ("product",)),
+    ("asset_vendor_product_index", "Asset", ("vendor", "product")),
+]
+
+
 def _constraint_clause(name: str, label: str, prop: str) -> str:
     return (
         f"CREATE CONSTRAINT {name} IF NOT EXISTS "
@@ -32,11 +53,20 @@ def _constraint_clause(name: str, label: str, prop: str) -> str:
     )
 
 
+def _index_clause(name: str, label: str, props: tuple[str, ...]) -> str:
+    on = ", ".join(f"n.{p}" for p in props)
+    return f"CREATE INDEX {name} IF NOT EXISTS FOR (n:{label}) ON ({on})"
+
+
 def bootstrap_schema(driver: Driver) -> list[str]:
     applied: list[str] = []
     with driver.session() as session:
         for name, label, prop in UNIQUE_CONSTRAINTS:
             session.run(_constraint_clause(name, label, prop)).consume()
+            applied.append(name)
+
+        for name, label, props in RANGE_INDEXES:
+            session.run(_index_clause(name, label, props)).consume()
             applied.append(name)
 
         dimensions = int(

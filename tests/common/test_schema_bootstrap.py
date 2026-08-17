@@ -36,6 +36,12 @@ def test_bootstrap_creates_all_constraints_and_the_vector_index(driver):
         "ioc_value_type_key",
         "cpe_match_id_unique",
         "asset_key_unique",
+        # Range indexes backing the asset matcher (final-review finding #4): without
+        # them every match event and sweep page planned a full label scan over CPEMatch.
+        "cpe_match_vendor_product_index",
+        "cpe_match_vendor_index",
+        "cpe_match_product_index",
+        "asset_vendor_product_index",
         "article_embedding_index",
     }
 
@@ -46,9 +52,11 @@ def test_bootstrap_creates_all_constraints_and_the_vector_index(driver):
 
         index_names = {r["name"] for r in session.run("SHOW INDEXES YIELD name")}
         assert "article_embedding_index" in index_names
+        assert "cpe_match_vendor_product_index" in index_names
+        assert "asset_vendor_product_index" in index_names
 
 
 def test_bootstrap_is_idempotent(driver):
     bootstrap_schema(driver)
     second_run_applied = bootstrap_schema(driver)  # must not raise
-    assert len(second_run_applied) == 12
+    assert len(second_run_applied) == 16
