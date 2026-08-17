@@ -41,6 +41,12 @@
   width: 100%;
 }
 
+.add-asset-result {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
 .asset-cards {
   display: flex;
   flex-direction: column;

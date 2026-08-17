@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { Plus, Trash2 } from 'lucide-react';
 import {
   useAssets, createAsset, deleteAsset, useAssetCves, useAllAssetsCves, useKnownVendorProducts,
@@ -11,7 +12,10 @@ function AddAssetForm({ onAdded }) {
   const [product, setProduct] = useState('');
   const [version, setVersion] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const { data: knownData } = useKnownVendorProducts();
+  const [result, setResult] = useState(null);
+  // Send whatever the user has typed so far as the prefix: the endpoint's LIMIT is a
+  // page size over a filtered set, not a cap on the whole label.
+  const { data: knownData } = useKnownVendorProducts(vendor || product);
   const known = knownData?.vendor_products || [];
 
   // Autocomplete against real graph data (design spec Decision 9) rather than free text --
@@ -27,7 +31,11 @@ function AddAssetForm({ onAdded }) {
     if (!vendor || !product || !version) return;
     setSubmitting(true);
     try {
-      await createAsset({ vendor, product, version });
+      // POST /assets matches synchronously and returns match_count precisely so the user
+      // gets an immediate answer instead of waiting for the daily sweep -- discarding it
+      // threw away the whole reason create_asset_handler runs the matcher inline.
+      const created = await createAsset({ vendor, product, version });
+      setResult({ vendor, product, version, matchCount: created?.match_count ?? 0 });
       setVendor(''); setProduct(''); setVersion('');
       onAdded();
     } finally {
@@ -57,12 +65,20 @@ function AddAssetForm({ onAdded }) {
       <button className="btn btn--primary btn--sm" type="submit" disabled={submitting}>
         <Plus size={16} /> Add
       </button>
+
+      {result && (
+        <p className="add-asset-result" role="status">
+          {result.vendor} {result.product} v{result.version}: {result.matchCount}{' '}
+          {result.matchCount === 1 ? 'CVE' : 'CVEs'} matched
+        </p>
+      )}
     </form>
   );
 }
 
 export default function AssetsPage() {
   const [selectedKey, setSelectedKey] = useState(null);
+  const queryClient = useQueryClient();
   const { data: assetsData, refetch: refetchAssets } = useAssets();
   const { data: assetCves } = useAssetCves(selectedKey);
   const { data: allCves } = useAllAssetsCves();
@@ -70,10 +86,17 @@ export default function AssetsPage() {
   const assets = assetsData?.assets || [];
   const cves = selectedKey ? (assetCves?.cves || []) : (allCves?.cves || []);
 
+  // The CVE-list queries carry a 2-minute staleTime, so after a create/delete the panel
+  // would show pre-change data for up to two minutes with nothing to say it had. Every
+  // asset query key starts with 'assets', so one prefix invalidation covers the list,
+  // the per-asset CVEs, and the aggregate CVEs.
+  const invalidateAssets = () => queryClient.invalidateQueries({ queryKey: ['assets'] });
+
   const handleDelete = async (assetKey) => {
     await deleteAsset(assetKey);
     if (selectedKey === assetKey) setSelectedKey(null);
     refetchAssets();
+    invalidateAssets();
   };
 
   return (
@@ -82,7 +105,7 @@ export default function AssetsPage() {
         <div className="sidebar-header">
           <h2>Your Assets</h2>
         </div>
-        <AddAssetForm onAdded={refetchAssets} />
+        <AddAssetForm onAdded={() => { refetchAssets(); invalidateAssets(); }} />
         <div className="asset-cards">
           <div
             className={`asset-card card card--clickable ${selectedKey === null ? 'active' : ''}`}
