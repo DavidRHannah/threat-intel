@@ -107,14 +107,6 @@ def _clear_config_cache(monkeypatch):
     config.get_config.cache_clear()
 
 
-@pytest.fixture(autouse=True)
-def _mock_structural_edges_publish():
-    # resync_matches (src/common/graph/structural_edges.py) publishes a node_write for
-    # each newly-created CPEMatch (Task 7). Not under test here -- this file's own
-    # `patch("src.collection.rest.nvd.publish_node_write")` calls only cover nvd.py's
-    # own CVE-level publish, not structural_edges' separate import of the same name.
-    with patch("src.common.graph.structural_edges.publish_node_write"):
-        yield
 
 
 @pytest.fixture
@@ -250,7 +242,13 @@ def test_cvss_change_publishes_a_node_write(driver):
     with patch("src.collection.rest.nvd.publish_node_write") as pub:
         poll_nvd_delta(driver, client, "2026-07-10T00:00:00.000")
 
-    calls_by_cve = {c.kwargs["key"]["cve_id"]: c for c in pub.call_args_list}
+    # Filter to CVE-labelled announcements: the same publisher now also carries the
+    # post-commit CPEMatch announcements (final-review finding #1), keyed differently.
+    calls_by_cve = {
+        c.kwargs["key"]["cve_id"]: c
+        for c in pub.call_args_list
+        if c.kwargs["label"] == "CVE"
+    }
     assert "CVE-2026-1001" in calls_by_cve
     kwargs = calls_by_cve["CVE-2026-1001"].kwargs
     assert kwargs["label"] == "CVE"
@@ -272,7 +270,9 @@ def test_reapplying_an_identical_cvss_score_does_not_announce(driver):
         poll_nvd_delta(driver, client, "2026-07-10T00:00:00.000")
 
     calls_for_1001 = [
-        c for c in pub.call_args_list if c.kwargs["key"]["cve_id"] == "CVE-2026-1001"
+        c
+        for c in pub.call_args_list
+        if c.kwargs["label"] == "CVE" and c.kwargs["key"]["cve_id"] == "CVE-2026-1001"
     ]
     assert calls_for_1001 == []
 
@@ -321,7 +321,11 @@ def test_mid_loop_failure_does_not_lose_earlier_announcements(driver):
     # The first record's write committed for real despite the second record's crash.
     assert _cve_props(driver, "CVE-2026-1001")["cvss_score"] == 7.5
     # ...and it was announced BEFORE the crash propagated, not discarded with it.
-    announced_cves = {c.kwargs["key"]["cve_id"] for c in pub.call_args_list}
+    announced_cves = {
+        c.kwargs["key"]["cve_id"]
+        for c in pub.call_args_list
+        if c.kwargs["label"] == "CVE"
+    }
     assert announced_cves == {"CVE-2026-1001"}
 
 
@@ -470,7 +474,7 @@ def test_concurrent_cvss_changes_announce_exactly_once(driver):
     def apply_once():
         try:
             with driver.session() as s:
-                _, changed = s.execute_write(_apply_cve_tx, parsed, allow_create=False)
+                _, changed, _created = s.execute_write(_apply_cve_tx, parsed, allow_create=False)
             changes.append(changed)
         except Exception as exc:      # noqa: BLE001 - surfaced via the assert below
             errors.append(exc)
@@ -509,7 +513,7 @@ def test_concurrent_allow_create_cvss_changes_announce_exactly_once(driver):
     def apply_once():
         try:
             with driver.session() as s:
-                _, changed = s.execute_write(_apply_cve_tx, parsed, allow_create=True)
+                _, changed, _created = s.execute_write(_apply_cve_tx, parsed, allow_create=True)
             changes.append(changed)
         except Exception as exc:      # noqa: BLE001 - surfaced via the assert below
             errors.append(exc)
@@ -585,3 +589,85 @@ def test_cpe_matches_dedupes_on_match_criteria_id():
         }]}]},
     ]
     assert len(_cpe_matches(configurations)) == 1
+
+
+# --- Final-review finding #1: CPEMatch announcements are post-commit and guardable -----
+
+
+class TestCpeMatchPublishing:
+    """`resync_matches` used to publish a `node_write` per newly-created CPEMatch from
+    INSIDE `_apply_cve_tx`'s `session.execute_write` callback, which was wrong twice
+    over: pre-commit (a subscriber could read a node that does not exist yet) and
+    unconditional (bypassing `enrich_cve`/`backfill`'s `publish=False` guard, so a bulk
+    backfill would fan ~10^5 announcements at L4 and the assets matcher).
+    """
+
+    @staticmethod
+    def _stub(driver, cve_id: str) -> None:
+        with driver.session() as s:
+            s.run(
+                "MERGE (c:CVE {cve_id:$id}) SET c.test_fixture = true", id=cve_id
+            ).consume()
+
+    @staticmethod
+    def _cleanup(driver) -> None:
+        with driver.session() as s:
+            s.run("MATCH (m:CPEMatch) DETACH DELETE m").consume()
+
+    def test_publishes_created_cpe_match_after_the_transaction_commits(self, driver):
+        self._stub(driver, "CVE-2026-1001")
+        client = FakeHttpClient(_load("nvd_delta_response.json"))
+
+        visible_at_publish_time: list[int] = []
+
+        def _record(**kwargs):
+            if kwargs.get("label") != "CPEMatch":
+                return
+            # A brand new session: it can only see state the writing transaction has
+            # already COMMITTED. If the publish still fired inside execute_write, this
+            # read would come back 0.
+            with driver.session() as s:
+                visible_at_publish_time.append(
+                    s.run(
+                        "MATCH (m:CPEMatch {match_criteria_id:$id}) RETURN count(m) AS n",
+                        id=kwargs["key"]["match_criteria_id"],
+                    ).single()["n"]
+                )
+
+        try:
+            with patch(
+                "src.collection.rest.nvd.publish_node_write", side_effect=_record
+            ) as mock_publish:
+                enrich_cve(driver, client, "CVE-2026-1001")
+
+            cpe_calls = [
+                c for c in mock_publish.call_args_list if c.kwargs.get("label") == "CPEMatch"
+            ]
+            assert cpe_calls, "no CPEMatch node_write announced for a newly-created match"
+            assert all(c.kwargs["changed_fields"] == ["created"] for c in cpe_calls)
+            assert visible_at_publish_time and all(n == 1 for n in visible_at_publish_time), (
+                "CPEMatch was announced before its transaction committed"
+            )
+        finally:
+            self._cleanup(driver)
+
+    def test_publish_false_suppresses_the_cpe_match_announcement(self, driver):
+        self._stub(driver, "CVE-2026-1001")
+        client = FakeHttpClient(_load("nvd_delta_response.json"))
+        try:
+            # Patched at the DEFINITION site so no import path can slip past it -- the
+            # old bug published through structural_edges' own import of this name.
+            with patch("src.common.graph.publish.publish_node_write") as mock_publish:
+                enrich_cve(driver, client, "CVE-2026-1001", publish=False)
+            mock_publish.assert_not_called()
+
+            # ...and the graph write still happened, so this is a suppressed
+            # announcement, not a suppressed write.
+            with driver.session() as s:
+                n = s.run(
+                    "MATCH (:CVE {cve_id:'CVE-2026-1001'})-[:MATCHES]->(m:CPEMatch) "
+                    "RETURN count(m) AS n"
+                ).single()["n"]
+            assert n >= 1
+        finally:
+            self._cleanup(driver)

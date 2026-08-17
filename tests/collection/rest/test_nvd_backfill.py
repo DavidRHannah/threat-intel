@@ -12,7 +12,7 @@ policy -- not the enrichment itself, which `test_nvd.py` already covers.
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -61,14 +61,11 @@ class ScriptedHttpClient:
 
 @pytest.fixture(autouse=True)
 def _no_publish():
-    """`enrich_cve` publishes a node_write on a CVSS change; no SNS in these tests.
-    Also covers structural_edges.publish_node_write (Task 7), which resync_matches
-    fires for each newly-created CPEMatch -- a separate import of the same function,
-    not caught by patching nvd.py's own reference."""
-    with (
-        patch("src.collection.rest.nvd.publish_node_write"),
-        patch("src.common.graph.structural_edges.publish_node_write"),
-    ):
+    """`enrich_cve` publishes a node_write on a CVSS change and one per newly-created
+    CPEMatch; no SNS in these tests. Both now go through nvd.py's own reference (final
+    review finding #1 moved the CPEMatch publish out of `resync_matches`, which ran
+    pre-commit and could not see the backfill's `publish=False`)."""
+    with patch("src.collection.rest.nvd.publish_node_write"):
         yield
 
 
@@ -266,3 +263,40 @@ def test_backfill_aborts_on_auth_failure_without_marking_anything_not_found(driv
         backfill(driver, client, rate_limiter=None)
 
     assert _prop(driver, "CVE-2026-7005", "nvd_not_found_at") is None
+
+
+def test_backfill_publishes_nothing_including_cpe_match_node_writes(driver):
+    """Final-review finding #1. `resync_matches` used to publish one `node_write` per
+    newly-created CPEMatch from inside the write transaction, with no access to this
+    flag -- so a backfill over the live graph would have fanned out ~10^5 announcements
+    at L4's per-message Lambda and the assets matcher, which is exactly what
+    `publish=False` exists to prevent. Patched at the publisher's DEFINITION site so no
+    import path can slip past the assertion.
+    """
+    _stub(driver, "CVE-2026-1001")
+    client = ScriptedHttpClient(FakeResponse(_load("nvd_delta_response.json")))
+
+    # ONE mock installed at both the definition site and nvd.py's own reference: the
+    # latter overrides the autouse `_no_publish` fixture (which would otherwise swallow
+    # nvd.py's calls and make this assertion vacuous), the former catches any other
+    # module that re-imports the publisher.
+    mock_publish = MagicMock()
+    try:
+        with (
+            patch("src.collection.rest.nvd.publish_node_write", mock_publish),
+            patch("src.common.graph.publish.publish_node_write", mock_publish),
+        ):
+            backfill(driver, client, rate_limiter=None)  # publish defaults to False
+        mock_publish.assert_not_called()
+
+        # The CPEMatch graph write still happened -- suppressed announcement, not a
+        # suppressed write.
+        with driver.session() as s:
+            n = s.run(
+                "MATCH (:CVE {cve_id:'CVE-2026-1001'})-[:MATCHES]->(m:CPEMatch) "
+                "RETURN count(m) AS n"
+            ).single()["n"]
+        assert n >= 1
+    finally:
+        with driver.session() as s:
+            s.run("MATCH (m:CPEMatch) DETACH DELETE m").consume()

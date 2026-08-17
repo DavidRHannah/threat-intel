@@ -104,11 +104,19 @@ def _cwe_ids(weaknesses: list[dict]) -> list[str]:
 def _split_cpe(criteria: str) -> tuple[str | None, str | None, str | None]:
     """CPE 2.3 URI is `cpe:2.3:part:vendor:product:version:...` — positional, `:`-delimited.
     Returns (vendor, product, version), with a bare "*" or "-" version treated as
-    "no exact pin" (None) rather than a literal value to match against."""
+    "no exact pin" (None) rather than a literal value to match against.
+
+    Vendor/product are CASE-FOLDED here, at write time. The asset matcher looks CPEMatch
+    up by exact vendor/product equality so the CPEMatch(vendor, product) index can serve
+    the lookup; a `toLower()` in the query would make that index unusable (a function on
+    the indexed property plans as a full label scan). `Asset` normalizes the same way in
+    `src.assets.store.create_asset`, so both sides of the comparison are already folded.
+    The unfolded original stays available in `criteria` for display/debug.
+    """
     parts = criteria.split(":")
     if len(parts) < 6:
         return None, None, None
-    vendor, product, version = parts[3], parts[4], parts[5]
+    vendor, product, version = parts[3].lower(), parts[4].lower(), parts[5]
     if version in ("*", "-", ""):
         version = None
     return vendor or None, product or None, version
@@ -215,10 +223,15 @@ def _is_newer(incoming: str | None, stored: str | None) -> bool:
     return incoming > stored
 
 
-def _apply_cve_tx(tx, parsed: ParsedCve, *, allow_create: bool) -> tuple[str, bool]:
+def _apply_cve_tx(
+    tx, parsed: ParsedCve, *, allow_create: bool
+) -> tuple[str, bool, list[str]]:
     """Read-decide-write for one CVE, atomically inside a single execute_write callback.
 
-    Returns `(outcome, cvss_changed)`.
+    Returns `(outcome, cvss_changed, created_match_ids)`. `created_match_ids` is the set
+    of CPEMatch nodes `resync_matches` newly created; this function deliberately does NOT
+    announce them (it runs pre-commit, and has no access to the caller's `publish` flag) --
+    it hands them back so the caller can publish post-commit, exactly like `cvss_changed`.
 
     `outcome` is one of: "absent" (delta path, CVE not in graph -> untouched,
     uncounted), "resynced" (fields set + CATEGORIZED_AS re-synced + last_modified_date
@@ -260,7 +273,8 @@ def _apply_cve_tx(tx, parsed: ParsedCve, *, allow_create: bool) -> tuple[str, bo
         ).single()
 
     if row is None:
-        return "absent", False  # FR-DC-23: the delta poll never creates a CVE node.
+        # FR-DC-23: the delta poll never creates a CVE node.
+        return "absent", False, []
 
     stored_lmd = row["lmd"]
     stored_cvss = row["cvss_score"]
@@ -289,16 +303,19 @@ def _apply_cve_tx(tx, parsed: ParsedCve, *, allow_create: bool) -> tuple[str, bo
             cve_key={"cve_id": parsed.cve_id},
             cwe_keys=[{"cwe_id": w} for w in parsed.cwe_ids],
         )
-        resync_matches(tx, cve_key={"cve_id": parsed.cve_id}, matches=parsed.cpe_matches)
+        match_result = resync_matches(
+            tx, cve_key={"cve_id": parsed.cve_id}, matches=parsed.cpe_matches
+        )
         if parsed.last_modified is not None:
             tx.run(
                 "MATCH (c:CVE {cve_id:$id}) SET c.last_modified_date=$lmd",
                 id=parsed.cve_id,
                 lmd=parsed.last_modified,
             ).consume()
-        return "resynced", cvss_changed
+        return "resynced", cvss_changed, list(match_result["created"])
 
-    return "stale", cvss_changed  # freshness guard: skip the CATEGORIZED_AS re-sync only.
+    # freshness guard: skip the CATEGORIZED_AS/MATCHES re-sync only.
+    return "stale", cvss_changed, []
 
 
 def _alert(_response: Any) -> None:
@@ -308,8 +325,17 @@ def _alert(_response: Any) -> None:
     pass
 
 
+def _publish_cpe_matches(created_match_ids: list[str]) -> None:
+    """Announce newly-created CPEMatch nodes. Called only AFTER the writing transaction
+    has committed, so a subscriber (the assets matcher) that reads the node back sees it."""
+    for match_id in created_match_ids:
+        publish_node_write(
+            label="CPEMatch", key={"match_criteria_id": match_id}, changed_fields=["created"]
+        )
+
+
 def poll_nvd_delta(
-    driver, http_client: _HttpClient, last_success_at: str
+    driver, http_client: _HttpClient, last_success_at: str, *, publish: bool = True
 ) -> tuple[int, str]:
     """Fetch CVEs modified since `last_success_at` and update EXISTING CVEs only.
 
@@ -333,7 +359,7 @@ def poll_nvd_delta(
     updated = 0
     with driver.session() as session:
         for record in parsed:
-            outcome, cvss_changed = session.execute_write(
+            outcome, cvss_changed, created_matches = session.execute_write(
                 _apply_cve_tx, record, allow_create=False
             )
             if outcome != "absent":
@@ -346,10 +372,13 @@ def poll_nvd_delta(
             # a retry re-derives `cvss_changed=False` for those (the score is already
             # updated), turning a transient failure into a PERMANENT missed
             # announcement (Task 1.2 fix round 1, finding I2).
+            if not publish:
+                continue
             if cvss_changed:
                 publish_node_write(
                     label="CVE", key={"cve_id": record.cve_id}, changed_fields=["cvss_score"]
                 )
+            _publish_cpe_matches(created_matches)
 
     return updated, window_end
 
@@ -421,10 +450,13 @@ def enrich_cve(
     (`nvd_backfill.py`) needs in order to stop retrying a CVE NVD has no record of.
     Every other caller ignores it and is unaffected.
 
-    `publish=False` suppresses the `node_write` announcement. Intended for a bulk
-    backfill, where thousands of CVSS-change publishes would fan out to L4's per-message
-    Lambda faster than useful — the daily sweep rescores those CVEs anyway. Normal
-    on-demand callers leave it at True: the announcement is the designed rescore path.
+    `publish=False` suppresses BOTH `node_write` announcements this makes: the CVE's own
+    `cvss_score` change and one per newly-created CPEMatch node. Intended for a bulk
+    backfill, where thousands of CVSS-change publishes (and tens of thousands of CPEMatch
+    ones — a single CVE routinely carries dozens) would fan out to L4's per-message
+    Lambda and the assets matcher faster than useful. The daily scoring sweep rescores
+    those CVEs and the daily assets sweep reconciles the matches anyway. Normal on-demand
+    callers leave it at True: the announcement is the designed rescore/rematch path.
     """
     params = {"cveId": cve_id}
     response = http_client.get(_nvd_url(), params=params)
@@ -432,18 +464,23 @@ def enrich_cve(
 
     parsed = NvdNormalizer().parse(body)
     cvss_changed = False
+    created_matches: list[str] = []
     applied = False
     with driver.session() as session:
         for record in parsed:
             if record.cve_id != cve_id:
                 continue  # defensive: only the requested CVE
-            _outcome, cvss_changed = session.execute_write(
+            _outcome, cvss_changed, created_matches = session.execute_write(
                 _apply_cve_tx, record, allow_create=True
             )
             applied = True
 
     # Publish only AFTER the transaction commits, so a subscriber reading the node back
-    # sees the committed cvss_score.
-    if cvss_changed and publish:
-        publish_node_write(label="CVE", key={"cve_id": cve_id}, changed_fields=["cvss_score"])
+    # sees the committed cvss_score / CPEMatch node.
+    if publish:
+        if cvss_changed:
+            publish_node_write(
+                label="CVE", key={"cve_id": cve_id}, changed_fields=["cvss_score"]
+            )
+        _publish_cpe_matches(created_matches)
     return applied

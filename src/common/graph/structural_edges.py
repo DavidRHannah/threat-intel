@@ -1,4 +1,3 @@
-from src.common.graph.publish import publish_node_write
 from src.common.graph.writer import merge_relationship
 
 
@@ -34,6 +33,17 @@ def resync_categorized_as(tx, *, cve_key: dict, cwe_keys: list[dict]) -> dict:
 
 
 def resync_matches(tx, *, cve_key: dict, matches: list[dict]) -> dict:
+    """Re-sync a CVE's CPEMatch nodes/MATCHES edges. PURE GRAPH WRITE -- it does NOT
+    announce anything on SNS.
+
+    It runs inside its caller's `execute_write` callback, so publishing from here would
+    (a) announce PRE-commit, letting a subscriber read a node that does not exist yet --
+    the exact reason `enrich_cve`/`poll_nvd_delta` publish after their transaction
+    commits -- and (b) be unconditional, bypassing the `publish=False` guard the bulk
+    NVD backfill relies on to keep ~10^5 CPEMatch announcements off L4's per-message
+    Lambda. The newly-created ids are returned instead; `_apply_cve_tx`'s callers
+    publish them post-commit, gated on their own `publish` flag.
+    """
     created = []
     for match in matches:
         match_key = {"match_criteria_id": match["match_criteria_id"]}
@@ -49,11 +59,6 @@ def resync_matches(tx, *, cve_key: dict, matches: list[dict]) -> dict:
         )
         if outcome == "created":
             created.append(match["match_criteria_id"])
-
-    for match_id in created:
-        publish_node_write(
-            label="CPEMatch", key={"match_criteria_id": match_id}, changed_fields=["created"]
-        )
 
     wanted = {m["match_criteria_id"] for m in matches}
     match_cve = ", ".join(f"{k}: $cve_{k}" for k in cve_key)

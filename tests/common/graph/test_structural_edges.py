@@ -1,4 +1,3 @@
-from unittest.mock import patch
 
 import pytest
 
@@ -65,20 +64,19 @@ def test_new_mapping_reports_created_and_resync_reports_deleted(driver):
 def test_resync_matches_creates_node_and_edge(driver):
     with driver.session() as s:
         s.run("MERGE (c:CVE {cve_id:'CVE-2026-9001'}) SET c.test_fixture = true").consume()
-        with patch("src.common.graph.structural_edges.publish_node_write"):
-            result = s.execute_write(
-                lambda tx: resync_matches(
-                    tx,
-                    cve_key={"cve_id": "CVE-2026-9001"},
-                    matches=[{
-                        "match_criteria_id": "MC-1", "criteria": "cpe:2.3:a:acme:x:1.0:*:*:*:*:*:*:*",
-                        "vendor": "acme", "product": "x", "version": "1.0",
-                        "version_start_including": None, "version_start_excluding": None,
-                        "version_end_including": None, "version_end_excluding": None,
-                        "vulnerable": True,
-                    }],
-                )
+        result = s.execute_write(
+            lambda tx: resync_matches(
+                tx,
+                cve_key={"cve_id": "CVE-2026-9001"},
+                matches=[{
+                    "match_criteria_id": "MC-1", "criteria": "cpe:2.3:a:acme:x:1.0:*:*:*:*:*:*:*",
+                    "vendor": "acme", "product": "x", "version": "1.0",
+                    "version_start_including": None, "version_start_excluding": None,
+                    "version_end_including": None, "version_end_excluding": None,
+                    "vulnerable": True,
+                }],
             )
+        )
         s.run("MATCH (m:CPEMatch {match_criteria_id:'MC-1'}) SET m.test_fixture = true").consume()
         assert result["created"] == ["MC-1"]
         row = s.run(
@@ -101,9 +99,8 @@ def test_resync_matches_removes_stale_edge_but_not_the_shared_node(driver):
             "version_start_including": None, "version_start_excluding": None,
             "version_end_including": None, "version_end_excluding": None, "vulnerable": True,
         }
-        with patch("src.common.graph.structural_edges.publish_node_write"):
-            s.execute_write(lambda tx: resync_matches(tx, cve_key={"cve_id": "CVE-2026-9002"}, matches=[match]))
-            s.execute_write(lambda tx: resync_matches(tx, cve_key={"cve_id": "CVE-2026-9003"}, matches=[match]))
+        s.execute_write(lambda tx: resync_matches(tx, cve_key={"cve_id": "CVE-2026-9002"}, matches=[match]))
+        s.execute_write(lambda tx: resync_matches(tx, cve_key={"cve_id": "CVE-2026-9003"}, matches=[match]))
         s.run("MATCH (m:CPEMatch {match_criteria_id:'MC-2'}) SET m.test_fixture = true").consume()
         # CVE-2026-9002 no longer references it.
         result = s.execute_write(lambda tx: resync_matches(tx, cve_key={"cve_id": "CVE-2026-9002"}, matches=[]))
