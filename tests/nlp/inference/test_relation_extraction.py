@@ -97,6 +97,35 @@ def test_negated_relationship_produces_no_edge():
     assert validate_and_map(candidate) is None
 
 
+def test_low_assertion_strength_candidate_produces_no_edge():
+    # FR-INF-09: the LLM's own weak certainty in the relationship itself
+    # (independent of hedge-language discounting) drops the candidate.
+    candidate = CandidateRelation(
+        entity_a={"canonical_node_key": "threat_actor:apt28", "entity_type": "threat_actor"},
+        entity_b={"canonical_node_key": "cve:cve-2026-1234", "entity_type": "cve"},
+        relationship="exploits",
+        direction="a_to_b",
+        assertion_strength=0.3,
+        polarity="asserted",
+    )
+
+    assert validate_and_map(candidate) is None
+
+
+def test_assertion_strength_at_floor_boundary_is_kept():
+    # FR-INF-09: floor is inclusive.
+    candidate = CandidateRelation(
+        entity_a={"canonical_node_key": "threat_actor:apt28", "entity_type": "threat_actor"},
+        entity_b={"canonical_node_key": "cve:cve-2026-1234", "entity_type": "cve"},
+        relationship="exploits",
+        direction="a_to_b",
+        assertion_strength=0.5,
+        polarity="asserted",
+    )
+
+    assert validate_and_map(candidate) is not None
+
+
 def test_hedged_relationship_discounts_assertion_strength():
     # FR-INF-03: "suspected to exploit" -> polarity=hedged -> edge written but discounted.
     candidate = CandidateRelation(

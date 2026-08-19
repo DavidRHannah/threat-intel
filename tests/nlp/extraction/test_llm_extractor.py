@@ -55,3 +55,47 @@ def test_llm_failure_raises_and_is_caught_by_caller_not_swallowed_here(mock_anth
     import pytest
     with pytest.raises(TimeoutError):
         extract_fuzzy("text", "title", client=mock_client)
+
+
+@patch("src.nlp.extraction.llm_extractor.anthropic.Anthropic")
+def test_drops_candidate_below_confidence_floor(mock_anthropic_cls):
+    mock_client = mock_anthropic_cls.return_value
+    mock_client.messages.create.return_value = _mock_response(
+        {"candidates": [{"surface_text": "Vercel", "entity_type": "threat_actor",
+                          "context_snippet": "the Vercel breach", "confidence": 0.4}]}
+    )
+    mentions = extract_fuzzy("...the Vercel breach...", "Title", client=mock_client)
+    assert mentions == []  # FR-EX-13: below the 0.5 floor
+
+
+@patch("src.nlp.extraction.llm_extractor.anthropic.Anthropic")
+def test_keeps_candidate_at_confidence_floor_boundary(mock_anthropic_cls):
+    mock_client = mock_anthropic_cls.return_value
+    mock_client.messages.create.return_value = _mock_response(
+        {"candidates": [{"surface_text": "Fancy Bear", "entity_type": "threat_actor",
+                          "context_snippet": "Fancy Bear was observed...", "confidence": 0.5}]}
+    )
+    mentions = extract_fuzzy("Fancy Bear was observed...", "Title", client=mock_client)
+    assert len(mentions) == 1  # FR-EX-13: floor is inclusive
+
+
+@patch("src.nlp.extraction.llm_extractor.anthropic.Anthropic")
+def test_drops_cve_shaped_surface_text_regardless_of_confidence(mock_anthropic_cls):
+    mock_client = mock_anthropic_cls.return_value
+    mock_client.messages.create.return_value = _mock_response(
+        {"candidates": [{"surface_text": "CVE-2023-46120", "entity_type": "malware_family",
+                          "context_snippet": "patch CVE-2023-46120", "confidence": 0.99}]}
+    )
+    mentions = extract_fuzzy("...patch CVE-2023-46120...", "Title", client=mock_client)
+    assert mentions == []  # FR-EX-13: CVE IDs belong to deterministic extraction, not the LLM
+
+
+@patch("src.nlp.extraction.llm_extractor.anthropic.Anthropic")
+def test_drops_ghsa_shaped_surface_text_regardless_of_confidence(mock_anthropic_cls):
+    mock_client = mock_anthropic_cls.return_value
+    mock_client.messages.create.return_value = _mock_response(
+        {"candidates": [{"surface_text": "GHSA-89gg-p5r5-q6r4", "entity_type": "malware_family",
+                          "context_snippet": "fixed by GHSA-89gg-p5r5-q6r4", "confidence": 0.99}]}
+    )
+    mentions = extract_fuzzy("...fixed by GHSA-89gg-p5r5-q6r4...", "Title", client=mock_client)
+    assert mentions == []  # FR-EX-13: advisory IDs belong to deterministic extraction, not the LLM

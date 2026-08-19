@@ -18,6 +18,11 @@ interpolated content whatsoever.
 Polarity handling (FR-INF-03): `negated` -> no edge (`None`); `hedged` ->
 `assertion_strength` discounted; `asserted` -> full strength.
 
+Confidence floor (FR-INF-09): a candidate whose raw assertion_strength is
+below `inference_assertion_strength_floor` (default 0.5) is dropped outright,
+checked before the hedge discount so a strongly-worded hedge doesn't lose
+headroom to a check meant for the model's own weak certainty.
+
 Any exception from `client.messages.create` propagates uncaught. Graceful
 degradation is the Lambda handler's responsibility (Step 4.4), not this
 module's — as is the actual Neo4j write (`upsert_inferred_assertion`, wrapped
@@ -320,6 +325,15 @@ def validate_and_map(candidate: CandidateRelation) -> MappedEdge | None:
     the order the LLM named the two entities in.
     """
     if candidate.polarity == "negated":
+        return None
+
+    # FR-INF-09: a floor on the LLM's own raw certainty in the relationship,
+    # checked BEFORE the hedge discount -- a strongly-asserted-but-hedged claim
+    # ("suspected to exploit", strength 0.9) should still survive discounting to
+    # 0.45, so this is not the same knob as _HEDGE_DISCOUNT and must not be
+    # applied to the post-discount value.
+    floor = float(get_config("inference_assertion_strength_floor", default="0.5"))
+    if candidate.assertion_strength < floor:
         return None
 
     type_a = candidate.entity_a.get("entity_type", "")

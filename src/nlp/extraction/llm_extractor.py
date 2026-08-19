@@ -17,6 +17,10 @@ Guardrails:
   not literally present in `text` is dropped (kills fabrications).
 - Confidence cap (FR-EX-10): `min(raw_confidence, 0.99)` — LLM-derived
   confidence never reaches 1.0, which is reserved for deterministic matches.
+- Confidence floor + ID-shape guard (FR-EX-13): candidates below
+  `extraction_confidence_floor` (default 0.5) are dropped, as is any
+  candidate whose surface text is CVE/GHSA-ID-shaped regardless of
+  confidence — those formats belong to deterministic extraction.
 
 Any exception from `client.messages.create` propagates uncaught. Graceful
 degradation (catching this and falling back to deterministic-only mentions)
@@ -25,10 +29,16 @@ is the Lambda handler's responsibility (Step 1.3), not this function's.
 
 from __future__ import annotations
 
+import re
+
 import anthropic
 
 from src.common.config import get_config
 from src.nlp.messages import RawMention
+
+# FR-EX-13: CVE/advisory IDs belong to deterministic extraction, not the LLM's
+# threat_actor/malware_family vocabulary -- reject regardless of confidence.
+_ID_SHAPE_RE = re.compile(r"^(cve-\d{4}-\d+|ghsa-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})$", re.IGNORECASE)
 
 _SYSTEM_PROMPT = (
     "You are an information-extraction assistant for a threat-intelligence "
@@ -113,12 +123,18 @@ def extract_fuzzy(
             candidates = block.input.get("candidates", [])
             break
 
+    floor = float(get_config("extraction_confidence_floor", default="0.5"))
+
     mentions: list[RawMention] = []
     for candidate in candidates:
         surface_text = candidate.get("surface_text", "")
         if surface_text not in text:
             continue  # FR-EX-07: drop non-verbatim (hallucinated) candidates
+        if _ID_SHAPE_RE.match(surface_text.strip()):
+            continue  # FR-EX-13: CVE/GHSA IDs are not threat_actor/malware_family
         raw_confidence = candidate.get("confidence", 0.0)
+        if raw_confidence < floor:
+            continue  # FR-EX-13: drop low-confidence candidates before they reach the graph
         mentions.append(
             RawMention(
                 article_id="",
