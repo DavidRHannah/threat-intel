@@ -1,6 +1,7 @@
 .kpi-card {
   display: flex;
   flex-direction: column;
+  justify-content: space-between;
   gap: var(--space-4);
   position: relative;
   overflow: hidden;

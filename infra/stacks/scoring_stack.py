@@ -52,7 +52,7 @@ _ASSET_EXCLUDE = [
     "*.md",
 ]
 
-_NEO4J_SSM_PARAMS = ["neo4j_uri", "neo4j_user", "neo4j_password"]
+_NEO4J_SSM_PARAMS = ["neo4j_credentials"]
 _NEO4J_VERSION = "neo4j==6.2.0"
 
 # Mirrors src/scoring/knobs.py. Listed explicitly rather than accepting whatever the YAML

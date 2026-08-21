@@ -46,7 +46,7 @@ export default function EntityDetailPage() {
       <div className="breadcrumb">
         <Link to={backLink.to}>{backLink.label}</Link>
         <ChevronRight size={14} className="breadcrumb-icon" />
-        <span className="current">{entity.cve_id || entity.name || id}</span>
+        <span className="current">{entity.cve_id || entity.name || entity.title || id}</span>
       </div>
 
       <EntityHeader entity={entity} />

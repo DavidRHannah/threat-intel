@@ -159,6 +159,7 @@ def test_fetch_stats_counts_and_severity_distribution(driver):
             lambda tx: fetch_stats(
                 tx, today_start=today_start.isoformat(),
                 week_start=(today_start - timedelta(days=7)).isoformat(),
+                yesterday_start=(today_start - timedelta(days=1)).isoformat(),
             )
         )
         after_count = session.run(
@@ -170,6 +171,39 @@ def test_fetch_stats_counts_and_severity_distribution(driver):
     assert stats["active_exploits"] >= 1
     assert stats["articles_today"] >= 1
     assert after_count == before_count  # no writes
+
+
+def test_fetch_stats_articles_today_delta_is_real_not_hardcoded(driver):
+    """The KPI row's "vs last period" trend for articles_today must reflect a real
+    day-over-day comparison (yesterday's Article count). The other three KPIs have no
+    historical snapshot store to diff against, so trend_deltas omits them entirely rather
+    than show a fabricated number."""
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    yesterday_start = today_start - timedelta(days=1)
+    with driver.session() as session:
+        session.run(
+            "CREATE (:Article {source_guid_key: 't1', fetched_at: $t1, test_fixture: true})"
+            "CREATE (:Article {source_guid_key: 't2', fetched_at: $t2, test_fixture: true})"
+            "CREATE (:Article {source_guid_key: 'y1', fetched_at: $y1, test_fixture: true})",
+            t1=now.isoformat(),
+            t2=now.isoformat(),
+            y1=(yesterday_start + timedelta(hours=1)).isoformat(),
+        )
+    with driver.session() as session:
+        stats = session.execute_read(
+            lambda tx: fetch_stats(
+                tx, today_start=today_start.isoformat(),
+                week_start=(today_start - timedelta(days=7)).isoformat(),
+                yesterday_start=yesterday_start.isoformat(),
+            )
+        )
+    assert stats["articles_today"] >= 2
+    assert stats["articles_yesterday"] >= 1
+    assert stats["trend_deltas"]["articles_today"] == (
+        stats["articles_today"] - stats["articles_yesterday"]
+    )
+    assert set(stats["trend_deltas"].keys()) == {"articles_today"}
 
 
 def test_fetch_recent_stories_returns_representative_with_entities(driver):
@@ -213,6 +247,75 @@ def test_fetch_recent_stories_orders_correctly_across_mixed_timestamp_formats(dr
         rows = session.execute_read(lambda tx: fetch_recent_stories(tx, limit=10))
     headlines = [r["headline"] for r in rows]
     assert headlines.index("Newer") < headlines.index("Older")
+
+
+def test_fetch_recent_stories_excludes_iocs_and_ttps_and_prioritizes_actor_and_malware(driver):
+    """Raw IOC values and TTP ids aren't scannable as a headline tag -- they must never
+    appear in a story's entity list. Among the rest, ThreatActor/MalwareFamily are what
+    an analyst actually recognizes at a glance, so they must be picked over CVE/Campaign
+    when a story mentions more than the 5-entity cap."""
+    with driver.session() as session:
+        session.run(
+            "CREATE (a:Article {source_guid_key: 'a-priority', title: 'Priority Test', "
+            "  story_cluster_id: 'sc-priority', is_cluster_representative: true, "
+            "  dedup_cluster_size: 1, published_at: datetime('2026-08-01T00:00:00Z'), "
+            "  test_fixture: true})"
+            "CREATE (ta:ThreatActor {merge_key: 'ta-1', name: 'TA-One', test_fixture: true})"
+            "CREATE (mf:MalwareFamily {merge_key: 'mf-1', name: 'MF-One', test_fixture: true})"
+            "CREATE (cve:CVE {cve_id: 'CVE-PRIORITY', test_fixture: true})"
+            "CREATE (camp:Campaign {merge_key: 'camp-1', name: 'Camp-One', test_fixture: true})"
+            "CREATE (ioc:IOC {value: '1.2.3.4', ioc_type: 'ip', test_fixture: true})"
+            "CREATE (ttp:TTP {technique_id: 'T1059', name: 'TTP-One', test_fixture: true})"
+            "WITH a, ta, mf, cve, camp, ioc, ttp "
+            "CREATE (a)-[:MENTIONS {test_fixture: true}]->(ta) "
+            "CREATE (a)-[:MENTIONS {test_fixture: true}]->(mf) "
+            "CREATE (a)-[:MENTIONS {test_fixture: true}]->(cve) "
+            "CREATE (a)-[:MENTIONS {test_fixture: true}]->(camp) "
+            "CREATE (a)-[:MENTIONS {test_fixture: true}]->(ioc) "
+            "CREATE (a)-[:MENTIONS {test_fixture: true}]->(ttp)"
+        )
+    with driver.session() as session:
+        rows = session.execute_read(lambda tx: fetch_recent_stories(tx, limit=10))
+    story = next(r for r in rows if r["headline"] == "Priority Test")
+    types = [e["type"] for e in story["entities"]]
+    assert "ioc" not in types
+    assert "ttp" not in types
+    assert types.index("actor") < types.index("cve")
+    assert types.index("malware") < types.index("cve")
+    assert types.index("cve") < types.index("campaign")
+
+
+def test_fetch_recent_stories_balances_across_sources(driver):
+    """A high-volume automated source (GHSA in production) must not be able to crowd a
+    low-volume curated source (BleepingComputer/Krebs) out of the feed entirely just by
+    publishing more often. Round-robin across sources guarantees each source that has
+    ANY recent story gets a slot, even if a plain recency sort would exclude it."""
+    with driver.session() as session:
+        for i in range(8):
+            session.run(
+                "CREATE (:Article {source_guid_key: $key, source_id: 'many-source', "
+                "  title: $title, story_cluster_id: $key, "
+                "  is_cluster_representative: true, dedup_cluster_size: 1, "
+                "  published_at: $pub, test_fixture: true})",
+                key=f"many-{i}", title=f"Many {i}",
+                pub=f"2026-08-18T{10 + i:02d}:00:00Z",
+            )
+        session.run(
+            "CREATE (:Article {source_guid_key: 'few-a', source_id: 'few-source-a', "
+            "  title: 'Few A', story_cluster_id: 'few-a', "
+            "  is_cluster_representative: true, dedup_cluster_size: 1, "
+            "  published_at: '2026-08-17T09:00:00Z', test_fixture: true})"
+            "CREATE (:Article {source_guid_key: 'few-b', source_id: 'few-source-b', "
+            "  title: 'Few B', story_cluster_id: 'few-b', "
+            "  is_cluster_representative: true, dedup_cluster_size: 1, "
+            "  published_at: '2026-08-17T08:00:00Z', test_fixture: true})"
+        )
+    with driver.session() as session:
+        rows = session.execute_read(lambda tx: fetch_recent_stories(tx, limit=4))
+    headlines = {r["headline"] for r in rows}
+    assert "Few A" in headlines
+    assert "Few B" in headlines
+    assert sum(1 for r in rows if r["headline"].startswith("Many")) < 4
 
 
 def test_fetch_subgraph_returns_node_and_neighbors(driver):
@@ -285,6 +388,57 @@ def test_fetch_subgraph_types_cwe_neighbours(driver):
     assert result["neighbors"][0]["type"] == "cwe"
 
 
+def test_fetch_subgraph_types_source_neighbours(driver):
+    """Source is Article's PUBLISHED_BY neighbour but had no type mapping."""
+    with driver.session() as session:
+        session.run(
+            "CREATE (a:Article {source_guid_key: 'egosrc-1', title: 'Ego Source Test', "
+            "  test_fixture: true})"
+            "CREATE (s:Source {source_id: 'egosrc-src', test_fixture: true})"
+            "WITH a, s "
+            "CREATE (a)-[:PUBLISHED_BY {test_fixture: true}]->(s)"
+        )
+        element_id = session.run(
+            "MATCH (a:Article {source_guid_key: 'egosrc-1'}) RETURN elementId(a) AS id"
+        ).single()["id"]
+
+    with driver.session() as session:
+        result = session.execute_read(lambda tx: fetch_subgraph(tx, element_id=element_id))
+
+    assert result["neighbors"][0]["type"] == "source"
+
+
+def test_fetch_subgraph_excludes_cpematch_neighbors(driver):
+    """CPEMatch is a per-CVE version-range join key, not a browsable intel entity -- a
+    single CVE can carry a dozen+ of them (Asset Inventory backfill, 2026-08), which
+    overwhelms the ego-graph view with nodes the user never asked to see. They must not
+    be returned as subgraph neighbors at all."""
+    with driver.session() as session:
+        session.run(
+            "CREATE (c:CVE {cve_id: 'CVE-EGOCPE', test_fixture: true})"
+            "CREATE (m:CPEMatch {match_criteria_id: 'egocpe-1', vendor: 'acme', "
+            "  product: 'widget', test_fixture: true})"
+            "CREATE (w:CWE {cwe_id: 'CWE-79', test_fixture: true})"
+            "WITH c, m, w "
+            "CREATE (c)-[:MATCHES {test_fixture: true}]->(m) "
+            "CREATE (c)-[:CATEGORIZED_AS {test_fixture: true}]->(w)"
+        )
+        element_id = session.run(
+            "MATCH (c:CVE {cve_id: 'CVE-EGOCPE'}) RETURN elementId(c) AS id"
+        ).single()["id"]
+
+    with driver.session() as session:
+        result = session.execute_read(lambda tx: fetch_subgraph(tx, element_id=element_id))
+
+    neighbor_types = {n["type"] for n in result["neighbors"]}
+    assert "cwe" in neighbor_types
+    assert None not in neighbor_types  # CPEMatch would surface as an unmapped/null type
+    assert len(result["neighbors"]) == 1
+    edge_types = {e["type"] for e in result["edges"]}
+    assert "MATCHES" not in edge_types
+    assert "CATEGORIZED_AS" in edge_types
+
+
 def test_entity_short_type_and_subgraph_type_mappings():
     assert entity_short_type(["CVE"]) == "cve"
     assert entity_short_type(["ThreatActor"]) == "actor"
@@ -296,6 +450,7 @@ def test_entity_short_type_and_subgraph_type_mappings():
     assert entity_subgraph_type(["IOC"]) == "ioc"
     assert entity_subgraph_type(["Article"]) == "article"
     assert entity_subgraph_type(["CWE"]) == "cwe"
+    assert entity_subgraph_type(["Source"]) == "source"
 
 
 def test_fetch_cves_for_asset_orders_by_severity(driver):

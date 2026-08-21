@@ -12,21 +12,18 @@ export function KpiRow() {
       <KpiCard
         title="Critical CVEs"
         value={stats?.critical_cves}
-        delta={stats?.trend_deltas?.critical_cves}
         icon={ShieldAlert}
         accentColor="var(--color-critical)"
       />
       <KpiCard
         title="Active Exploits"
         value={stats?.active_exploits}
-        delta={stats?.trend_deltas?.active_exploits}
         icon={Flame}
         accentColor="var(--color-high)"
       />
       <KpiCard
         title="Threat Actors"
         value={stats?.total_actors}
-        delta={stats?.trend_deltas?.total_actors}
         icon={Users}
         accentColor="var(--color-entity-actor)"
       />

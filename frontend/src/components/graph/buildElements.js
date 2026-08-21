@@ -21,7 +21,8 @@ export function buildElements(data, { hideTypes = [] } = {}) {
     {
       data: {
         id: centralNode.id,
-        label: centralNode.cve_id || centralNode.name || centralNode.cwe_id || centralNode.id,
+        label: centralNode.cve_id || centralNode.name || centralNode.cwe_id
+          || centralNode.title || centralNode.id,
         type: centralNode.type,
       },
     },

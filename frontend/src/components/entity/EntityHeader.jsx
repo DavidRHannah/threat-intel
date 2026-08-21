@@ -36,7 +36,7 @@ export function EntityHeader({ entity }) {
       </div>
 
       <div className="entity-title-section">
-        <h1 className="entity-title">{entity.cve_id || entity.name || entity.id}</h1>
+        <h1 className="entity-title">{entity.cve_id || entity.name || entity.title || entity.id}</h1>
         {(entity.type === 'actor' || entity.type === 'threat_actor') && entity.origin_country && (
           <div className="entity-aliases">
             Country: {entity.origin_country}

@@ -1,11 +1,17 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { EntityBadge } from '../common/EntityBadge';
 import { formatTactics, primaryTactic } from '../../utils/formatters';
 import './EvidenceTabs.css';
 
+const KNOWN_TAB_TYPES = ['article', 'threat_actor', 'actor', 'ttp', 'ioc'];
+
+const neighborLabel = (n) =>
+  n.name || n.title || n.cve_id || n.cwe_id || n.value || n.id;
+
 export function EvidenceTabs({ subgraph }) {
   const [activeTab, setActiveTab] = useState('articles');
-  
+
   if (!subgraph) return null;
 
   const { neighbors, edges } = subgraph;
@@ -19,12 +25,16 @@ export function EvidenceTabs({ subgraph }) {
   const ttps = getNeighborsByType(['ttp'])
     .sort((a, b) => primaryTactic(a.tactic).localeCompare(primaryTactic(b.tactic)) || (a.name || '').localeCompare(b.name || ''));
   const iocs = getNeighborsByType(['ioc']);
+  // Catch-all for any neighbor type the 4 fixed tabs above don't cover (CVE,
+  // MalwareFamily, Campaign, Source, CWE, ...) -- without this, those connections are
+  // only visible in the ego graph, never in this structured list.
+  const others = neighbors.filter(n => !KNOWN_TAB_TYPES.includes(n.type));
 
   return (
     <div className="evidence-tabs card">
       <div className="tabs-header">
-        {['articles', 'actors', 'ttps', 'iocs'].map(tab => (
-          <button 
+        {['articles', 'actors', 'ttps', 'iocs', 'other'].map(tab => (
+          <button
             key={tab}
             id={`tab-${tab}`}
             className={`tab-btn ${activeTab === tab ? 'active' : ''}`}
@@ -34,6 +44,7 @@ export function EvidenceTabs({ subgraph }) {
             {tab === 'actors' && 'Exploiting Actors'}
             {tab === 'ttps' && 'Associated TTPs'}
             {tab === 'iocs' && 'IOC Indicators'}
+            {tab === 'other' && 'Related Entities'}
           </button>
         ))}
         <div className={`tab-indicator indicator-${activeTab}`}></div>
@@ -101,6 +112,21 @@ export function EvidenceTabs({ subgraph }) {
                 </tr>
               ))}
               {iocs.length === 0 && <tr><td colSpan="2">No IOC indicators found.</td></tr>}
+            </tbody>
+          </table>
+        )}
+
+        {activeTab === 'other' && (
+          <table className="evidence-table">
+            <thead><tr><th>Name</th><th>Type</th></tr></thead>
+            <tbody>
+              {others.map(n => (
+                <tr key={n.id}>
+                  <td><Link to={`/entity/${n.type}/${n.id}`}>{neighborLabel(n)}</Link></td>
+                  <td><EntityBadge type={n.type} /></td>
+                </tr>
+              ))}
+              {others.length === 0 && <tr><td colSpan="2">No other related entities found.</td></tr>}
             </tbody>
           </table>
         )}

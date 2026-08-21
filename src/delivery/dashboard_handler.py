@@ -30,11 +30,13 @@ def stats_handler(event, context) -> dict:
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start = today_start - timedelta(days=7)
+    yesterday_start = today_start - timedelta(days=1)
     driver = get_driver()
     with driver.session() as session:
         stats = session.execute_read(
             lambda tx: fetch_stats(
                 tx, today_start=today_start.isoformat(), week_start=week_start.isoformat(),
+                yesterday_start=yesterday_start.isoformat(),
             )
         )
     return _response(200, stats)

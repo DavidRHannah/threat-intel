@@ -15,7 +15,7 @@ _SHORT_TYPE_BY_LABEL = {
 _SUBGRAPH_TYPE_BY_LABEL = {
     "CVE": "cve", "ThreatActor": "threat_actor", "MalwareFamily": "malware_family",
     "TTP": "ttp", "Campaign": "campaign", "IOC": "ioc", "Article": "article",
-    "CWE": "cwe",
+    "CWE": "cwe", "Source": "source",
 }
 
 _ID_PROP_BY_LABEL = {
@@ -70,14 +70,21 @@ CALL {
   MATCH (a:Article) WHERE a.fetched_at >= $week_start
   RETURN count(a) AS articles_week
 }
+CALL {
+  MATCH (a:Article) WHERE a.fetched_at >= $yesterday_start AND a.fetched_at < $today_start
+  RETURN count(a) AS articles_yesterday
+}
 RETURN total_cves, critical_cves, high_cves, medium_cves, low_cves, unknown_cves,
        active_exploits, total_actors, total_malware, total_ttps, total_iocs,
-       total_articles, articles_today, articles_week
+       total_articles, articles_today, articles_week, articles_yesterday
 """
 
 
-def fetch_stats(tx, *, today_start: str, week_start: str) -> dict:
-    row = tx.run(_STATS_QUERY, today_start=today_start, week_start=week_start).single()
+def fetch_stats(tx, *, today_start: str, week_start: str, yesterday_start: str) -> dict:
+    row = tx.run(
+        _STATS_QUERY, today_start=today_start, week_start=week_start,
+        yesterday_start=yesterday_start,
+    ).single()
     data = dict(row)
     data["severity_distribution"] = {
         "critical": data["critical_cves"], "high": data["high_cves"],
@@ -85,10 +92,12 @@ def fetch_stats(tx, *, today_start: str, week_start: str) -> dict:
         "unknown": data["unknown_cves"],
     }
     # No historical snapshot store exists yet (technical-specification.md §11 doesn't cover
-    # one) -- an honest zero, not a fabricated trend, per this codebase's "honest default"
-    # convention (e.g. created == modified on first STIX export in L5).
+    # one), so critical_cves/active_exploits/total_actors have no trend to show -- the
+    # frontend omits their delta rather than display a fabricated number.
+    # articles_today is the exception: Article.fetched_at is a real ingestion timestamp, so a
+    # day-over-day comparison against articles_yesterday is a real delta.
     data["trend_deltas"] = {
-        "critical_cves": 0, "active_exploits": 0, "articles_today": 0, "total_actors": 0,
+        "articles_today": data["articles_today"] - data["articles_yesterday"],
     }
     return data
 
@@ -158,14 +167,28 @@ def fetch_top_campaigns(tx, *, limit: int) -> list[dict]:
     return [dict(r) for r in tx.run(_TOP_CAMPAIGNS_QUERY, limit=limit)]
 
 
+# IOC/TTP are excluded outright -- a raw indicator value or technique id isn't
+# scannable as a headline tag. Among the rest, ThreatActor/MalwareFamily are what an
+# analyst recognizes at a glance, so they're ranked ahead of CVE/Campaign before the
+# 5-entity cap -- `collect()` preserves row order from the preceding `ORDER BY`.
 _RECENT_STORIES_QUERY = """
 MATCH (a:Article)
 WHERE a.is_cluster_representative = true AND a.story_cluster_id IS NOT NULL
 OPTIONAL MATCH (a)-[:MENTIONS]->(entity)
+WHERE entity IS NULL OR NOT (entity:IOC OR entity:TTP)
+WITH a, entity,
+     CASE
+       WHEN entity:ThreatActor THEN 0
+       WHEN entity:MalwareFamily THEN 1
+       WHEN entity:CVE THEN 2
+       WHEN entity:Campaign THEN 3
+       ELSE 4
+     END AS priority
+ORDER BY priority
 WITH a, collect(DISTINCT {labels: labels(entity), props: properties(entity)})[0..5] AS entities
 RETURN elementId(a) AS id, a.story_cluster_id AS cluster_id, a.title AS headline,
        coalesce(a.dedup_cluster_size, 1) AS article_count, a.published_at AS created_at,
-       entities
+       a.source_id AS source_id, entities
 LIMIT $fetch_limit
 """
 
@@ -187,6 +210,45 @@ def _created_at_str(value) -> str | None:
     return value.isoformat()
 
 
+def _recency_key(story: dict):
+    # Sorting on just the `datetime` half of `chronological_sort_key`'s tuple (not the
+    # leading sentinel bool) is deliberate: `datetime.min` is smaller than every real
+    # timestamp, so a plain descending sort already pushes date-less articles to the
+    # end on its own -- reversing the full tuple would instead put them first (the
+    # bool flips too).
+    return chronological_sort_key(_created_at_str(story["created_at"]))[1]
+
+
+def _round_robin_by_source(stories: list[dict], *, limit: int) -> list[dict]:
+    """Picks `limit` stories fairly across sources instead of by pure recency, so a
+    high-volume automated source (GHSA) can't crowd a low-volume curated one
+    (BleepingComputer/Krebs) out of the feed just by publishing more often. Each
+    source's own stories stay newest-first; sources are visited round-robin, one story
+    per source per round, until `limit` is reached or every source is exhausted."""
+    by_source: dict[str, list[dict]] = {}
+    for story in stories:
+        by_source.setdefault(story["source_id"], []).append(story)
+    for source_stories in by_source.values():
+        source_stories.sort(key=_recency_key, reverse=True)
+
+    source_order = sorted(by_source)
+    cursors = dict.fromkeys(source_order, 0)
+    selected = []
+    while len(selected) < limit:
+        progressed = False
+        for source in source_order:
+            i = cursors[source]
+            if i < len(by_source[source]):
+                selected.append(by_source[source][i])
+                cursors[source] = i + 1
+                progressed = True
+                if len(selected) >= limit:
+                    break
+        if not progressed:
+            break
+    return selected
+
+
 def fetch_recent_stories(tx, *, limit: int) -> list[dict]:
     rows = tx.run(
         _RECENT_STORIES_QUERY, fetch_limit=limit * _RECENT_STORIES_OVERFETCH_FACTOR
@@ -204,21 +266,25 @@ def fetch_recent_stories(tx, *, limit: int) -> list[dict]:
             if e["labels"]
         ]
         stories.append(story)
-    # Sort by parsed timestamp descending (most recent first). Sorting on just the
-    # `datetime` half of `chronological_sort_key`'s tuple (not the leading sentinel
-    # bool) is deliberate: `datetime.min` is smaller than every real timestamp, so a
-    # plain descending sort already pushes date-less articles to the end on its own --
-    # reversing the full tuple would instead put them first (the bool flips too).
-    stories.sort(
-        key=lambda s: chronological_sort_key(_created_at_str(s["created_at"]))[1],
-        reverse=True,
-    )
-    return stories[:limit]
+
+    selected = _round_robin_by_source(stories, limit=limit)
+    # The round-robin above picks WHICH stories make the cut fairly; the displayed
+    # order is still plain recency, so the feed still reads top-to-bottom as "newest
+    # first" rather than grouped by source.
+    selected.sort(key=_recency_key, reverse=True)
+    for story in selected:
+        del story["source_id"]
+    return selected
 
 
+# CPEMatch is a version-range join key for asset matching, not a browsable entity -- a
+# CVE can carry a dozen+ of them (2026-08 Asset Inventory backfill), which would
+# overwhelm the ego-graph view. Excluded in Cypher, not post-fetch, so the payload
+# itself stays small rather than just the rendering.
 _SUBGRAPH_QUERY = """
 MATCH (n) WHERE elementId(n) = $element_id
 OPTIONAL MATCH (n)-[r]-(neighbor)
+WHERE neighbor IS NULL OR NOT neighbor:CPEMatch
 RETURN elementId(n) AS node_id, labels(n) AS node_labels, properties(n) AS node_props,
        collect(DISTINCT CASE WHEN neighbor IS NULL THEN null ELSE
          {id: elementId(neighbor), labels: labels(neighbor), props: properties(neighbor)}

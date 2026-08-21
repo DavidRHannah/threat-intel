@@ -259,7 +259,8 @@ def _apply_cve_tx(
             "CALL apoc.lock.nodes([c]) "
             "WITH c "
             "MATCH (n:CVE {cve_id:$id}) "
-            "RETURN n.last_modified_date AS lmd, n.cvss_score AS cvss_score",
+            "RETURN n.last_modified_date AS lmd, n.cvss_score AS cvss_score, "
+            "EXISTS { (n)-[:MATCHES]->(:CPEMatch) } AS has_matches",
             id=parsed.cve_id,
         ).single()
     else:
@@ -268,7 +269,8 @@ def _apply_cve_tx(
             "CALL apoc.lock.nodes([c]) "
             "WITH c "
             "MATCH (n:CVE {cve_id:$id}) "
-            "RETURN n.last_modified_date AS lmd, n.cvss_score AS cvss_score",
+            "RETURN n.last_modified_date AS lmd, n.cvss_score AS cvss_score, "
+            "EXISTS { (n)-[:MATCHES]->(:CPEMatch) } AS has_matches",
             id=parsed.cve_id,
         ).single()
 
@@ -290,23 +292,31 @@ def _apply_cve_tx(
             props=parsed.properties,
         ).consume()
 
-    if _is_newer(parsed.last_modified, stored_lmd):
+    is_fresh = _is_newer(parsed.last_modified, stored_lmd)
+    # A CVE enriched before CPEMatch existed (the 2026-08 Asset Inventory backfill's
+    # catch-up target) already has last_modified_date == NVD's current lastModified, so
+    # `is_fresh` is False forever -- it would never get MATCHES resynced on the freshness
+    # guard alone. Re-sync MATCHES whenever it's missing, independent of freshness;
+    # CATEGORIZED_AS stays gated on `is_fresh` only (unchanged: no reason to redo it when
+    # the payload genuinely hasn't changed).
+    if is_fresh or not row["has_matches"]:
         # L3's merge_relationship MATCHes both endpoints and never creates nodes (node
         # creation is the calling layer's job). Nothing else in src/ MERGEs a CWE, so the
         # CVE->CWE re-sync would raise EndpointNotFoundError on any real CVE carrying a CWE.
         # MERGE each CWE stub here, inside this same execute_write transaction, before the
         # re-sync. The cwe_id_unique constraint (schema_bootstrap.py) makes this idempotent.
-        for cwe_id in parsed.cwe_ids:
-            tx.run("MERGE (:CWE {cwe_id: $id})", id=cwe_id).consume()
-        resync_categorized_as(
-            tx,
-            cve_key={"cve_id": parsed.cve_id},
-            cwe_keys=[{"cwe_id": w} for w in parsed.cwe_ids],
-        )
+        if is_fresh:
+            for cwe_id in parsed.cwe_ids:
+                tx.run("MERGE (:CWE {cwe_id: $id})", id=cwe_id).consume()
+            resync_categorized_as(
+                tx,
+                cve_key={"cve_id": parsed.cve_id},
+                cwe_keys=[{"cwe_id": w} for w in parsed.cwe_ids],
+            )
         match_result = resync_matches(
             tx, cve_key={"cve_id": parsed.cve_id}, matches=parsed.cpe_matches
         )
-        if parsed.last_modified is not None:
+        if parsed.last_modified is not None and is_fresh:
             tx.run(
                 "MATCH (c:CVE {cve_id:$id}) SET c.last_modified_date=$lmd",
                 id=parsed.cve_id,

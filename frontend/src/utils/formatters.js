@@ -37,6 +37,8 @@ export const ENTITY_TYPES = {
   ttp: { label: 'TTP', color: 'var(--color-entity-ttp)', className: 'badge--ttp' },
   ioc: { label: 'IOC', color: 'var(--color-entity-ioc)', className: 'badge--ioc' },
   campaign: { label: 'Campaign', color: 'var(--color-entity-campaign)', className: 'badge--campaign' },
+  article: { label: 'Article', color: 'var(--color-entity-article)', className: 'badge--article' },
+  source: { label: 'Source', color: 'var(--color-entity-source)', className: 'badge--source' },
 };
 
 export function getEntityType(type) {

@@ -16,9 +16,10 @@ Design decisions worth not re-deriving:
 - **The topic ARN travels as an env var**, not another SSM read: the topic is a direct
   CDK object ref here, so `CROSSROADS_GRAPH_WRITES_TOPIC_ARN` on the publishing Lambdas
   lets `get_config` resolve it with zero IAM surface (env vars beat SSM in `get_config`).
-- **Neo4j credentials are SSM SecureString secrets** (`get_driver` reads
-  `neo4j_uri`/`neo4j_user`/`neo4j_password`), so every graph-writing Lambda gets an SSM
-  read grant for those three and `CROSSROADS_ENV` set so `get_config` resolves SSM rather
+- **Neo4j credentials are one SSM SecureString secret** (`get_driver` reads
+  `neo4j_credentials`, a JSON blob of uri/user/password — consolidated from three separate
+  params to cut `kms:Decrypt` calls 3x per cold start), so every graph-writing Lambda gets
+  an SSM read grant for it and `CROSSROADS_ENV` set so `get_config` resolves SSM rather
   than the local-dev defaults.
 - **EventBridge tiering** (`data-collection-layer/design.md` Part 4 §10): one rule per
   tier, the tier's Lambdas as targets. Fast/15-min = URLhaus, MalwareBazaar, ThreatFox;
@@ -69,7 +70,7 @@ _ASSET_EXCLUDE = [
     "*.md",
 ]
 
-_NEO4J_SSM_PARAMS = ["neo4j_uri", "neo4j_user", "neo4j_password"]
+_NEO4J_SSM_PARAMS = ["neo4j_credentials"]
 
 
 def _bundled_code(pip_deps: tuple[str, ...]) -> _lambda.Code:

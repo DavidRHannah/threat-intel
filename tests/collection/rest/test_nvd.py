@@ -226,6 +226,36 @@ def test_enrich_cve_writes_cpe_match_nodes(driver):
         assert row["n"] >= 1
 
 
+def test_reenriching_an_already_current_cve_still_backfills_missing_matches(driver):
+    """Regression: a CVE enriched BEFORE CPEMatch existed (real production shape for the
+    2026-08 Asset Inventory backfill) already carries `last_modified_date` equal to NVD's
+    current `lastModified` and zero MATCHES edges. `_apply_cve_tx`'s freshness guard
+    (`_is_newer`) governs the CATEGORIZED_AS re-sync correctly, but it also gated
+    `resync_matches` -- so a CVE whose NVD data genuinely hasn't changed since its last
+    enrichment can NEVER get its CPEMatch nodes backfilled, because it always takes the
+    "stale" branch. Confirmed live: re-running scripts/run_nvd_backfill.py against
+    1728 already-enriched CVEs reported `enriched=1728` but created zero CPEMatch nodes.
+    """
+    # nvd_delta_response.json's CVE-2026-1001 lastModified is 2026-07-19T09:30:00.000 --
+    # pre-set the stored watermark to the SAME instant so _is_newer is False.
+    with driver.session() as s:
+        s.run(
+            "MERGE (c:CVE {cve_id:'CVE-2026-1001'}) "
+            "SET c.test_fixture = true, c.last_modified_date = '2026-07-19T09:30:00.000'"
+        ).consume()
+
+    client = FakeHttpClient(_load("nvd_delta_response.json"))
+    with patch("src.collection.rest.nvd.publish_node_write"):
+        enrich_cve(driver, client, "CVE-2026-1001")
+
+    with driver.session() as s:
+        s.run("MATCH (m:CPEMatch) SET m.test_fixture = true").consume()
+        row = s.run(
+            "MATCH (:CVE {cve_id:'CVE-2026-1001'})-[:MATCHES]->(m:CPEMatch) RETURN count(m) AS n"
+        ).single()
+        assert row["n"] >= 1
+
+
 # --- Task 1.2: node_write publish on a real cvss_score change ------------------
 
 

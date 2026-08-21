@@ -86,5 +86,5 @@ class FoundationStack(Stack):
             self,
             self.schema_bootstrap.function.role,
             env_name=env_name,
-            param_names=["neo4j_uri", "neo4j_user", "neo4j_password", "embedding_dimensions"],
+            param_names=["neo4j_credentials", "embedding_dimensions"],
         )

@@ -21,10 +21,7 @@ export const mockStats = {
     critical: 23, high: 89, medium: 342, low: 793, unknown: 0,
   },
   trend_deltas: {
-    critical_cves: +3,
-    active_exploits: +1,
     articles_today: -12,
-    total_actors: +2,
   },
 };
 

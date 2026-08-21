@@ -20,7 +20,7 @@ _ASSET_EXCLUDE = [
     ".venv", ".git", ".claude", ".pytest_cache", ".superpowers", "**/__pycache__",
     "crossroads.egg-info", "tests", "plans", "progress-reports", "*-layer", "*.md",
 ]
-_NEO4J_SSM_PARAMS = ["neo4j_uri", "neo4j_user", "neo4j_password"]
+_NEO4J_SSM_PARAMS = ["neo4j_credentials"]
 _NEO4J_VERSION = "neo4j==6.2.0"
 
 

@@ -35,11 +35,11 @@ Design decisions worth not re-deriving:
   `get_config("anthropic_api_key")` for fuzzy (LLM-assisted) resolution
   (`src/nlp/resolution/fuzzy.py`), contradicting the plan text's "resolution and dedup do
   not call an LLM" — Dedup alone calls no LLM.
-- **Neo4j credentials are SSM SecureString secrets**, same pattern as
+- **Neo4j credentials are one SSM SecureString secret**, same pattern as
   `data_collection_stack.py`: every Lambda that calls `get_driver()` (Resolution, Dedup,
-  Inference — not Extraction) gets an SSM read grant for `neo4j_uri`/`neo4j_user`/
-  `neo4j_password` plus `CROSSROADS_ENV` so `get_config` resolves SSM rather than the
-  local-dev defaults.
+  Inference — not Extraction) gets an SSM read grant for the consolidated
+  `neo4j_credentials` JSON blob (uri/user/password, one `kms:Decrypt` instead of three)
+  plus `CROSSROADS_ENV` so `get_config` resolves SSM rather than the local-dev defaults.
 - **Queue URLs and table names travel as env vars, not SSM params.** Every producer
   Lambda and its downstream queue/table live in this same stack, so (mirroring
   `data_collection_stack.py`'s `CROSSROADS_GRAPH_WRITES_TOPIC_ARN` reasoning for a direct
@@ -86,7 +86,7 @@ _ASSET_EXCLUDE = [
     "*.md",
 ]
 
-_NEO4J_SSM_PARAMS = ["neo4j_uri", "neo4j_user", "neo4j_password"]
+_NEO4J_SSM_PARAMS = ["neo4j_credentials"]
 
 _ANTHROPIC_VERSION = "anthropic==0.68.0"
 _NEO4J_VERSION = "neo4j==6.2.0"

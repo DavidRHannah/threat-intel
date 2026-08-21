@@ -289,6 +289,8 @@ input:focus, select:focus, textarea:focus {
 .badge--ttp { background: rgba(34,197,94,0.12); color: var(--color-entity-ttp); }
 .badge--ioc { background: rgba(249,115,22,0.12); color: var(--color-entity-ioc); }
 .badge--campaign { background: rgba(236,72,153,0.12); color: var(--color-entity-campaign); }
+.badge--article { background: rgba(107,114,128,0.12); color: var(--color-entity-article); }
+.badge--source { background: rgba(6,182,212,0.12); color: var(--color-entity-source); }
 
 /* Buttons */
 .btn {

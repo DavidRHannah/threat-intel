@@ -6,11 +6,10 @@ import { useRecentStories } from '../../api/hooks';
 import { formatRelativeTime } from '../../utils/formatters';
 
 function storyLink(story) {
-  const primary = story.entities?.[0];
-  if (!primary) return `/search?q=${encodeURIComponent(story.headline)}`;
-
-  const id = primary.id || primary.name;
-  return `/entity/${primary.type}/${encodeURIComponent(id)}`;
+  // story.id is the representative Article's own elementId (fetch_recent_stories in
+  // src/delivery/queries.py) -- link to the article itself so a click shows every
+  // connection extraction made from it, not just its first mentioned entity.
+  return `/entity/article/${encodeURIComponent(story.id)}`;
 }
 
 export function ThreatFeed() {

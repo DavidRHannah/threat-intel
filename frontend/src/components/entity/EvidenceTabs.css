@@ -37,7 +37,7 @@
   bottom: 0;
   height: 2px;
   background: var(--color-primary);
-  width: 25%;
+  width: 20%;
   transition: transform var(--transition-base);
 }
 
@@ -45,6 +45,7 @@
 .indicator-actors { transform: translateX(100%); }
 .indicator-ttps { transform: translateX(200%); }
 .indicator-iocs { transform: translateX(300%); }
+.indicator-other { transform: translateX(400%); }
 
 .tab-content {
   padding: var(--space-0);
