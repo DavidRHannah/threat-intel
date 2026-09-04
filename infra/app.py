@@ -11,7 +11,15 @@ from infra.stacks.scoring_stack import ScoringStack
 
 app = cdk.App()
 env_name = app.node.try_get_context("env") or "dev"
-foundation = FoundationStack(app, f"CrossroadsFoundation-{env_name}", env_name=env_name)
+
+# used for all stacks
+foundation = FoundationStack(
+    app, 
+    f"CrossroadsFoundation-{env_name}", 
+    env_name=env_name
+)
+
+# used for assets stack
 data_collection = DataCollectionStack(
     app,
     f"CrossroadsDataCollection-{env_name}",
@@ -30,6 +38,7 @@ ScoringStack(
     env_name=env_name,
     foundation=foundation,
 )
+# use for delivery stack
 interop = InteropStack(
     app,
     f"CrossroadsInterop-{env_name}",
@@ -50,4 +59,5 @@ AssetsStack(
     foundation=foundation,
     data_collection=data_collection,
 )
+
 app.synth()

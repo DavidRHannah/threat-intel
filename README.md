@@ -1,10 +1,10 @@
-# Crossroads
+# Threat Intelligence Platform
 
 An open-source threat-intelligence platform.
 
 ![Dashboard Preview](docs/screenshots/dashboard.png)
 
-Crossroads ingests security feeds and turns them into a queryable, scored threat graph:
+The system ingests security feeds and turns them into a queryable, scored threat graph:
 
 - Collects data from RSS/Atom feeds, security blogs, CERT/CISA advisories, NVD, MITRE ATT&CK, and abuse.ch
 - Extracts CVEs, IOCs, threat actors, and malware families from unstructured text via NLP
@@ -19,4 +19,14 @@ Requires Python 3.12 and Docker (for local Neo4j and DynamoDB).
 pip install -e ".[dev]"
 docker compose up -d
 pytest
+```
+
+## Documentation
+
+Architecture, data model, Lambda handler catalog, infra, runbook, and an
+auto-generated API reference: see [`docs/`](docs/index.md), or serve it locally:
+
+```bash
+pip install -e ".[docs]"
+mkdocs serve
 ```

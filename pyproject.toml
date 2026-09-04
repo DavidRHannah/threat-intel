@@ -1,7 +1,7 @@
 [project]
-name = "crossroads"
+name = "Threat Intelligence Platform"
 version = "0.1.0"
-description = "Crossroads threat-intelligence platform"
+description = "Threat-intelligence platform"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "neo4j==6.2.0",
@@ -20,6 +20,15 @@ dependencies = [
 dev = [
     "pytest==8.4.2",
     "moto[dynamodb,ssm]==5.2.2",
+    "ruff==0.15.0",
+]
+docs = [
+    "mkdocs==1.6.1",
+    "mkdocs-material==9.6.14",
+    "mkdocstrings[python]==0.29.1",
+    "mkdocs-gen-files==0.5.0",
+    "mkdocs-literate-nav==0.6.2",
+    "mkdocs-section-index==0.3.9",
     "ruff==0.15.0",
 ]
 

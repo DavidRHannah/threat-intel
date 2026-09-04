@@ -23,8 +23,11 @@ htmlcov/
 .superpowers/
 
 /*-layer
-/docs/*
-!/docs/screenshots
+/site
+
+# ad hoc/local scripts -- keep gen_ref_pages.py tracked, ignore the rest
+/scripts/*
+!/scripts/gen_ref_pages.py
 /plans
 /progress-reports
 /requirements
